@@ -78,6 +78,7 @@ int plex_config_load(PlexConfig *cfg)
 
     const char *token       = json_object_get_string(obj, "token");
     const char *server_url  = json_object_get_string(obj, "server_url");
+    const char *relay_url   = json_object_get_string(obj, "relay_url");
     const char *server_name = json_object_get_string(obj, "server_name");
     const char *server_id   = json_object_get_string(obj, "server_id");
 
@@ -85,6 +86,8 @@ int plex_config_load(PlexConfig *cfg)
         strncpy(cfg->token, token, sizeof(cfg->token) - 1);
     if (server_url)
         strncpy(cfg->server_url, server_url, sizeof(cfg->server_url) - 1);
+    if (relay_url)
+        strncpy(cfg->relay_url, relay_url, sizeof(cfg->relay_url) - 1);
     if (server_name)
         strncpy(cfg->server_name, server_name, sizeof(cfg->server_name) - 1);
     if (server_id)
@@ -107,6 +110,7 @@ int plex_config_save(const PlexConfig *cfg)
 
     json_object_set_string(obj, "token",       cfg->token);
     json_object_set_string(obj, "server_url",  cfg->server_url);
+    json_object_set_string(obj, "relay_url",   cfg->relay_url);
     json_object_set_string(obj, "server_name", cfg->server_name);
     json_object_set_string(obj, "server_id",   cfg->server_id);
 

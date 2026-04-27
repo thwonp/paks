@@ -125,10 +125,99 @@ int plex_auth_check_pin(PlexPin *pin)
 }
 
 /* ------------------------------------------------------------------
+ * conn_rank — lower is better
+ * Tier 0: local=true
+ * Tier 1: local=false, relay=false
+ * Tier 2: relay=true
+ * Within a tier, prefer non-plex.direct (direct IP) over plex.direct —
+ * plex.direct requires Plex's DNS to resolve and may fail on some networks.
+ * Within each (tier, plex_direct) pair, prefer HTTPS over HTTP.
+ * Final rank = tier*4 + plex_direct*2 + https_penalty
+ * ------------------------------------------------------------------ */
+static int conn_rank(JSON_Object *conn)
+{
+    int local = json_object_get_boolean(conn, "local");
+    int relay = json_object_get_boolean(conn, "relay");
+    const char *proto = json_object_get_string(conn, "protocol");
+    const char *uri   = json_object_get_string(conn, "uri");
+
+    int tier;
+    if (local == 1)
+        tier = 0;
+    else if (relay == 1)
+        tier = 2;
+    else
+        tier = 1;
+
+    int plex_direct   = (uri && strstr(uri, "plex.direct")) ? 1 : 0;
+    int https_penalty = (proto && strcmp(proto, "https") == 0) ? 0 : 1;
+    return tier * 4 + plex_direct * 2 + https_penalty;
+}
+
+/* ------------------------------------------------------------------
+ * best_conn_uri — walk connections array, return URI of best-ranked entry.
+ * Returns NULL if array is empty or no valid URI found.
+ * ------------------------------------------------------------------ */
+static const char *best_conn_uri(JSON_Array *conns)
+{
+    if (!conns) return NULL;
+    size_t n = json_array_get_count(conns);
+    if (n == 0) return NULL;
+
+    const char *best_uri  = NULL;
+    int         best_score = 999;
+
+    for (size_t i = 0; i < n; i++) {
+        JSON_Object *c = json_array_get_object(conns, i);
+        if (!c) continue;
+        const char *uri = json_object_get_string(c, "uri");
+        if (!uri || !*uri) continue;
+
+        int score = conn_rank(c);
+        if (score < best_score) {
+            best_score = score;
+            best_uri   = uri;
+        }
+    }
+    return best_uri;
+}
+
+/* ------------------------------------------------------------------
+ * best_nonlocal_uri — walk connections array, return URI of best-ranked
+ * entry where local != 1. Covers both external plex.direct and relay.
+ * Returns NULL if all connections are local.
+ * ------------------------------------------------------------------ */
+static const char *best_nonlocal_uri(JSON_Array *conns)
+{
+    if (!conns) return NULL;
+    size_t n = json_array_get_count(conns);
+    if (n == 0) return NULL;
+
+    const char *best_uri   = NULL;
+    int         best_score = 999;
+
+    for (size_t i = 0; i < n; i++) {
+        JSON_Object *c = json_array_get_object(conns, i);
+        if (!c) continue;
+        if (json_object_get_boolean(c, "local") == 1) continue;
+        const char *uri = json_object_get_string(c, "uri");
+        if (!uri || !*uri) continue;
+
+        int score = conn_rank(c);
+        if (score < best_score) {
+            best_score = score;
+            best_uri   = uri;
+        }
+    }
+    return best_uri;
+}
+
+/* ------------------------------------------------------------------
  * plex_auth_get_servers
  * GET https://plex.tv/api/v2/resources?includeHttps=1
  * Filters for provides containing "server".
- * Picks first connection URI as server_url.
+ * Picks best-ranked connection URI (local > non-relay > relay, HTTPS
+ * preferred within tier).
  * ------------------------------------------------------------------ */
 int plex_auth_get_servers(const char *token, PlexServer servers[], int *count)
 {
@@ -176,26 +265,27 @@ int plex_auth_get_servers(const char *token, PlexServer servers[], int *count)
         const char *provides = json_object_get_string(res, "provides");
         if (!provides || !strstr(provides, "server")) continue;
 
-        /* Pick first connection URI */
-        JSON_Array *conns = json_object_get_array(res, "connections");
-        if (!conns || json_array_get_count(conns) == 0) continue;
-
-        JSON_Object *first_conn = json_array_get_object(conns, 0);
-        if (!first_conn) continue;
-        const char *uri = json_object_get_string(first_conn, "uri");
-        if (!uri || !*uri) continue;
+        /* Pick best-ranked connection URI */
+        JSON_Array  *conns     = json_object_get_array(res, "connections");
+        const char  *uri       = best_conn_uri(conns);
+        if (!uri) continue;
 
         PlexServer *sv = &servers[*count];
         memset(sv, 0, sizeof(*sv));
 
-        const char *name = json_object_get_string(res, "name");
-        const char *cid  = json_object_get_string(res, "clientIdentifier");
-        int owned        = json_object_get_boolean(res, "owned");  /* -1 = missing */
+        const char *name      = json_object_get_string(res, "name");
+        const char *cid       = json_object_get_string(res, "clientIdentifier");
+        int owned             = json_object_get_boolean(res, "owned");  /* -1 = missing */
+        const char *nonlocal_uri = best_nonlocal_uri(conns);
 
         if (name) strncpy(sv->name, name, sizeof(sv->name) - 1);
         if (cid)  strncpy(sv->id,   cid,  sizeof(sv->id) - 1);
         strncpy(sv->url, uri, sizeof(sv->url) - 1);
+        if (nonlocal_uri) strncpy(sv->relay_url, nonlocal_uri, sizeof(sv->relay_url) - 1);
         sv->owned = (owned == 1);
+
+        PLEX_LOG("[PlexAuth] server[%d]: name=%s url=%s relay_url=%s conns=%zu\n",
+                 *count, sv->name, sv->url, sv->relay_url, json_array_get_count(conns));
 
         (*count)++;
     }
@@ -203,3 +293,4 @@ int plex_auth_get_servers(const char *token, PlexServer servers[], int *count)
     json_value_free(root);
     return 0;
 }
+

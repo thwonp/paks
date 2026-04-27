@@ -286,6 +286,8 @@ AppModule module_auth_run(SDL_Surface *screen)
                     cfg->token[PLEX_MAX_STR - 1] = '\0';
                     strncpy(cfg->server_url, servers[0].url, PLEX_MAX_URL - 1);
                     cfg->server_url[PLEX_MAX_URL - 1] = '\0';
+                    strncpy(cfg->relay_url, servers[0].relay_url, PLEX_MAX_URL - 1);
+                    cfg->relay_url[PLEX_MAX_URL - 1] = '\0';
                     strncpy(cfg->server_name, servers[0].name, PLEX_MAX_STR - 1);
                     cfg->server_name[PLEX_MAX_STR - 1] = '\0';
                     strncpy(cfg->server_id, servers[0].id, PLEX_MAX_STR - 1);
@@ -312,6 +314,8 @@ AppModule module_auth_run(SDL_Surface *screen)
                 cfg->token[PLEX_MAX_STR - 1] = '\0';
                 strncpy(cfg->server_url, servers[server_selected].url, PLEX_MAX_URL - 1);
                 cfg->server_url[PLEX_MAX_URL - 1] = '\0';
+                strncpy(cfg->relay_url, servers[server_selected].relay_url, PLEX_MAX_URL - 1);
+                cfg->relay_url[PLEX_MAX_URL - 1] = '\0';
                 strncpy(cfg->server_name, servers[server_selected].name, PLEX_MAX_STR - 1);
                 cfg->server_name[PLEX_MAX_STR - 1] = '\0';
                 strncpy(cfg->server_id, servers[server_selected].id, PLEX_MAX_STR - 1);

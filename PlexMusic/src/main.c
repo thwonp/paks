@@ -12,6 +12,7 @@
 
 #include "plex_log.h"
 #include "plex_config.h"
+#include "plex_net.h"
 #include "plex_art.h"
 #include "player.h"
 #include "ui_fonts.h"
@@ -37,6 +38,33 @@ const PlexConfig *plex_config_get(void)
 PlexConfig *plex_config_get_mutable(void)
 {
     return &g_config;
+}
+
+/* Probe server_url; if unreachable and relay_url is set, switch for this session. */
+static void apply_relay_fallback(PlexConfig *cfg)
+{
+    PLEX_LOG("[Main] apply_relay_fallback: server_url=%s relay_url=%s\n",
+             cfg->server_url, cfg->relay_url);
+    if (!plex_config_is_valid(cfg) || cfg->relay_url[0] == '\0') return;
+
+    char identity_url[PLEX_MAX_URL + 16];
+    snprintf(identity_url, sizeof(identity_url), "%s/identity", cfg->server_url);
+
+    uint8_t probe_buf[4096];
+    PlexNetOptions probe_opts = {
+        .method      = PLEX_HTTP_GET,
+        .body        = NULL,
+        .token       = cfg->token,
+        .timeout_sec = 3
+    };
+    int r = plex_net_fetch(identity_url, probe_buf, (int)sizeof(probe_buf), &probe_opts);
+    if (r > 0) {
+        PLEX_LOG("[Main] server_url reachable: %s\n", cfg->server_url);
+    } else {
+        PLEX_LOG("[Main] server_url unreachable, switching to relay_url: %s\n", cfg->relay_url);
+        strncpy(cfg->server_url, cfg->relay_url, sizeof(cfg->server_url) - 1);
+        cfg->server_url[sizeof(cfg->server_url) - 1] = '\0';
+    }
 }
 
 static void sig_handler(int sig) {
@@ -97,6 +125,9 @@ int main(int argc, char *argv[]) {
     }
     PLEX_LOG("[DIAG] plex_config_load done\n");
 
+    apply_relay_fallback(&g_config);
+    PLEX_LOG("[DIAG] startup URL probe done\n");
+
     /*
      * Determine starting module.
      * If the config has a valid token and server URL, go straight to browse.
@@ -113,6 +144,8 @@ int main(int argc, char *argv[]) {
         switch (current) {
         case MODULE_AUTH:
             next = module_auth_run(screen);
+            if (next == MODULE_BROWSE)
+                apply_relay_fallback(&g_config);
             break;
         case MODULE_BROWSE:
             next = module_browse_run(screen);

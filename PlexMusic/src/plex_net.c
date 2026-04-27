@@ -35,6 +35,7 @@ static int tcp_connect_timeout(const char *host, const char *port_str, int timeo
 
     if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res) {
         if (res) freeaddrinfo(res);
+        PLEX_LOG_ERROR("[PlexNet] DNS lookup failed: %s\n", host);
         return -1;
     }
 

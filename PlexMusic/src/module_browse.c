@@ -1243,6 +1243,9 @@ AppModule module_browse_run(SDL_Surface *screen)
                 state = net_error_from;
                 dirty = 1;
             } else if (PAD_justPressed(BTN_B)) {
+                if (net_error_back == BROWSE_LIBRARIES) {
+                    return MODULE_QUIT;
+                }
                 last_art_thumb[0] = '\0';
                 plex_art_clear();
                 switch (net_error_back) {
