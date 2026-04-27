@@ -1,0 +1,58 @@
+#ifndef PLEX_API_H
+#define PLEX_API_H
+
+#include "plex_models.h"
+
+/*
+ * Get list of music libraries (type="artist").
+ * Sets *count. Returns 0 on success.
+ */
+int plex_api_get_libraries(const PlexConfig *cfg, PlexLibrary libs[], int *count);
+
+/*
+ * Get paginated artists for a library section.
+ * offset: 0-based start. max_count: maximum items to write into artists[];
+ * pass PLEX_MAX_ITEMS for no limit on first page.
+ * page: filled with total/offset/count.
+ * Returns 0 on success.
+ */
+int plex_api_get_artists(const PlexConfig *cfg, int section_id,
+                         int offset, int max_count,
+                         PlexArtist artists[], PlexPage *page);
+
+/*
+ * Get albums for an artist (by artist rating_key).
+ * Returns 0 on success.
+ */
+int plex_api_get_albums(const PlexConfig *cfg, int artist_rating_key,
+                        PlexAlbum albums[], int *count);
+
+/*
+ * Get tracks for an album (by album rating_key).
+ * Returns 0 on success.
+ */
+int plex_api_get_tracks(const PlexConfig *cfg, int album_rating_key,
+                        PlexTrack tracks[], int *count);
+
+/*
+ * Build the full authenticated stream URL for a track.
+ * out_url must be PLEX_MAX_URL bytes.
+ */
+void plex_api_get_stream_url(const PlexConfig *cfg, const PlexTrack *track,
+                             char *out_url, int out_url_size);
+
+/*
+ * Report playback state to Plex (scrobbling).
+ * state: "playing", "paused", "stopped"
+ * Fire-and-forget; errors are silently ignored.
+ */
+void plex_api_timeline(const PlexConfig *cfg, int rating_key,
+                       const char *state, int time_ms, int duration_ms);
+
+/*
+ * Mark a track as fully played (scrobble).
+ * Fire-and-forget.
+ */
+void plex_api_scrobble(const PlexConfig *cfg, int rating_key);
+
+#endif /* PLEX_API_H */

@@ -1,0 +1,8 @@
+{
+  "type": "tool",
+  "name": "Plex Music",
+  "version": "v0.1.0",
+  "description": "Plex music client for NextUI",
+  "platforms": ["tg5040"],
+  "author": "Thwonp"
+}
