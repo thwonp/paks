@@ -578,6 +578,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                     snprintf(last_art_thumb, sizeof(last_art_thumb), "%s", artists[0].thumb);
                     plex_art_fetch(cfg, artists[0].thumb);
                 }
+                GFX_sync();
+                continue;
             }
 
             /* Count visible items (artists + optional "Load more") */
@@ -704,6 +706,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                     snprintf(last_art_thumb, sizeof(last_art_thumb), "%s", albums[0].thumb);
                     plex_art_fetch(cfg, albums[0].thumb);
                 }
+                GFX_sync();
+                continue;
             }
 
             /* Input */
@@ -811,6 +815,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                              "%s", selected_album_thumb);
                     plex_art_fetch(cfg, selected_album_thumb);
                 }
+                GFX_sync();
+                continue;
             }
 
             /* Input */
