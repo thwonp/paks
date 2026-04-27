@@ -46,6 +46,62 @@ typedef enum {
 } PlayerScreenState;
 
 /* ------------------------------------------------------------------
+ * Scrobble fire-and-forget infrastructure
+ * ------------------------------------------------------------------ */
+
+typedef struct {
+    char server_url[PLEX_MAX_URL];
+    char token[PLEX_MAX_STR];
+    int  rating_key;
+    char state[16];       /* "playing" or "stopped"; empty string for scrobble mark */
+    int  pos_ms;
+    int  dur_ms;
+    bool is_mark;         /* true → call plex_api_scrobble; false → plex_api_timeline */
+} ScrobbleCtx;
+
+static void *scrobble_worker(void *arg)
+{
+    ScrobbleCtx *ctx = (ScrobbleCtx *)arg;
+    /* reconstruct a minimal PlexConfig on the stack for the API calls */
+    PlexConfig tmp;
+    memset(&tmp, 0, sizeof(tmp));
+    strncpy(tmp.server_url, ctx->server_url, sizeof(tmp.server_url) - 1);
+    strncpy(tmp.token,      ctx->token,      sizeof(tmp.token) - 1);
+
+    if (ctx->is_mark)
+        plex_api_scrobble(&tmp, ctx->rating_key);
+    else
+        plex_api_timeline(&tmp, ctx->rating_key, ctx->state, ctx->pos_ms, ctx->dur_ms);
+
+    free(ctx);
+    return NULL;
+}
+
+static void fire_scrobble(const PlexConfig *cfg, int rating_key,
+                          const char *state, int pos_ms, int dur_ms, bool is_mark)
+{
+    ScrobbleCtx *ctx = malloc(sizeof(*ctx));
+    if (!ctx) return;
+    strncpy(ctx->server_url, cfg->server_url, sizeof(ctx->server_url) - 1);
+    strncpy(ctx->token,      cfg->token,      sizeof(ctx->token) - 1);
+    ctx->server_url[sizeof(ctx->server_url) - 1] = '\0';
+    ctx->token[sizeof(ctx->token) - 1]           = '\0';
+    ctx->rating_key = rating_key;
+    ctx->pos_ms     = pos_ms;
+    ctx->dur_ms     = dur_ms;
+    ctx->is_mark    = is_mark;
+    if (state) strncpy(ctx->state, state, sizeof(ctx->state) - 1);
+    ctx->state[sizeof(ctx->state) - 1] = '\0';
+
+    pthread_t t;
+    if (pthread_create(&t, NULL, scrobble_worker, ctx) != 0) {
+        free(ctx);
+        return;
+    }
+    pthread_detach(t);
+}
+
+/* ------------------------------------------------------------------
  * Download worker context
  * ------------------------------------------------------------------ */
 
@@ -522,17 +578,18 @@ AppModule module_player_run(SDL_Surface *screen)
             if (Player_getState() == PLAYER_STATE_PLAYING) {
                 if (now_ms - last_timeline_ms >= TIMELINE_INTERVAL_MS) {
                     if (dur_ms > 0) {
-                        plex_api_timeline(cfg,
-                                          queue->tracks[queue->current_index].rating_key,
-                                          "playing", pos_ms, dur_ms);
+                        fire_scrobble(cfg,
+                                      queue->tracks[queue->current_index].rating_key,
+                                      "playing", pos_ms, dur_ms, false);
                     }
                     last_timeline_ms = now_ms;
                 }
 
                 if (!scrobbled && dur_ms > 0 &&
                     (float)pos_ms / (float)dur_ms >= SCROBBLE_THRESHOLD) {
-                    plex_api_scrobble(cfg,
-                                      queue->tracks[queue->current_index].rating_key);
+                    fire_scrobble(cfg,
+                                  queue->tracks[queue->current_index].rating_key,
+                                  NULL, 0, 0, true);
                     scrobbled = true;
                 }
             }
@@ -557,10 +614,10 @@ AppModule module_player_run(SDL_Surface *screen)
             }
             else if (PAD_justPressed(BTN_START)) {
                 /* Full quit — stop playback and clean up */
-                plex_api_timeline(cfg,
-                                  queue->tracks[queue->current_index].rating_key,
-                                  "stopped", Player_getPosition(),
-                                  Player_getDuration());
+                fire_scrobble(cfg,
+                              queue->tracks[queue->current_index].rating_key,
+                              "stopped", Player_getPosition(),
+                              Player_getDuration(), false);
                 Background_setActive(BG_NONE);
                 if (download_pending) {
                     dl_ctx.should_cancel = true;
@@ -574,10 +631,10 @@ AppModule module_player_run(SDL_Surface *screen)
             }
             else if (PAD_justPressed(BTN_LEFT) || PAD_justPressed(BTN_L1)) {
                 if (plex_queue_has_prev()) {
-                    plex_api_timeline(cfg,
-                                      queue->tracks[queue->current_index].rating_key,
-                                      "stopped", Player_getPosition(),
-                                      Player_getDuration());
+                    fire_scrobble(cfg,
+                                  queue->tracks[queue->current_index].rating_key,
+                                  "stopped", Player_getPosition(),
+                                  Player_getDuration(), false);
                     Background_setActive(BG_NONE);
                     if (download_pending) {
                         dl_ctx.should_cancel = true;
@@ -605,10 +662,10 @@ AppModule module_player_run(SDL_Surface *screen)
             }
             else if (PAD_justPressed(BTN_RIGHT) || PAD_justPressed(BTN_R1)) {
                 if (plex_queue_has_next()) {
-                    plex_api_timeline(cfg,
-                                      queue->tracks[queue->current_index].rating_key,
-                                      "stopped", Player_getPosition(),
-                                      Player_getDuration());
+                    fire_scrobble(cfg,
+                                  queue->tracks[queue->current_index].rating_key,
+                                  "stopped", Player_getPosition(),
+                                  Player_getDuration(), false);
                     Background_setActive(BG_NONE);
                     if (download_pending) {
                         dl_ctx.should_cancel = true;
