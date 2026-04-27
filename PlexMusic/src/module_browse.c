@@ -28,6 +28,7 @@ typedef enum {
     BROWSE_ALBUMS,
     BROWSE_TRACKS,
     BROWSE_NET_ERROR,
+    BROWSE_ARTISTS_PAGE,   /* append-only artist page load; NOT a visible state */
 } BrowseState;
 
 typedef enum {
@@ -43,6 +44,9 @@ typedef enum {
 
 /* Right panel art padding */
 #define ART_PANEL_PAD SCALE1(8)
+
+/* How close the cursor must be to the end of loaded artists to trigger a page fetch */
+#define ARTIST_PAGE_LOOKAHEAD 5
 
 /* =========================================================================
  * Async worker
@@ -63,6 +67,7 @@ static struct {
     int              library_id;
     int              artist_rating_key;
     int              album_rating_key;
+    int              artist_offset;   /* offset for BROWSE_ARTISTS_PAGE worker */
     /* output pointers — point to module static arrays; worker writes, main reads after DONE */
     PlexLibrary     *libs;
     int             *lib_count;
@@ -109,6 +114,20 @@ static void *browse_load_worker(void *arg)
             rc = plex_api_get_tracks(&cfg, s_load.album_rating_key,
                                      s_load.tracks, s_load.track_count);
             break;
+        case BROWSE_ARTISTS_PAGE: {
+            PlexPage page;
+            memset(&page, 0, sizeof(page));
+            int offset = s_load.artist_offset;
+            int cap    = PLEX_MAX_ITEMS - offset;
+            if (cap > 0) {
+                rc = plex_api_get_artists(&cfg, s_load.library_id, offset, cap,
+                                          s_load.artists + offset, &page);
+            }
+            pthread_mutex_lock(&s_load.lock);
+            s_load.artists_page = page;
+            pthread_mutex_unlock(&s_load.lock);
+            break;
+        }
         default:
             rc = -1;
     }
@@ -302,7 +321,7 @@ static void render_art_panel(SDL_Surface *screen, SDL_Surface *art,
 
 /*
  * Render a standard screen with a list on the left panel and art on the right.
- * total_items includes a possible "Load more" sentinel.
+ * total_items includes a possible loading sentinel.
  */
 static void render_browse_screen(SDL_Surface *screen,
                                   const char *header,
@@ -400,16 +419,17 @@ typedef struct {
     PlexArtist *artists;
     int loaded;
     int total;
+    bool page_loading;
 } ArtistLabelCtx;
 
 static void artist_get_label(int i, char *buf, int size, void *ud)
 {
     ArtistLabelCtx *ctx = (ArtistLabelCtx *)ud;
-    /* "Load more" sentinel is one past the loaded artists */
-    if (i == ctx->loaded) {
-        snprintf(buf, size, "[ Load more... ]");
-    } else {
+    if (i < ctx->loaded) {
         snprintf(buf, size, "%s", ctx->artists[i].title);
+    } else {
+        /* Only shown when page_loading; i == ctx->loaded */
+        snprintf(buf, size, "(Loading...)");
     }
 }
 
@@ -489,6 +509,7 @@ AppModule module_browse_run(SDL_Surface *screen)
     static int           artist_selected   = 0;
     static int           artist_scroll     = 0;
     static LoadState     artists_ls        = LOAD_IDLE;
+    static bool          artists_page_loading = false;
 
     /* Albums */
     static PlexAlbum     albums[PLEX_MAX_ITEMS];
@@ -542,6 +563,7 @@ AppModule module_browse_run(SDL_Surface *screen)
         artists_ls      = LOAD_IDLE;
         artist_selected = 0;
         artist_scroll   = 0;
+        artists_page_loading = false;
         album_count     = 0;
         albums_ls       = LOAD_IDLE;
         album_selected  = 0;
@@ -556,7 +578,6 @@ AppModule module_browse_run(SDL_Surface *screen)
     /* ------------------------------------------------------------------ */
     /* Main event loop                                                     */
     /* ------------------------------------------------------------------ */
-#define DRAIN_EVENTS() do { SDL_Event _e; while (SDL_PollEvent(&_e)) {} } while(0)
     while (1) {
         GFX_startFrame();
         PAD_poll();
@@ -809,10 +830,38 @@ AppModule module_browse_run(SDL_Surface *screen)
 
             /* artists_ls == LOAD_READY — normal input + render */
 
-            /* Count visible items (artists + optional "Load more") */
-            int visible_items = artists_loaded;
-            if (artists_loaded < artists_total)
-                visible_items++; /* "Load more" sentinel */
+            /* Collect pagination results */
+            if (artists_page_loading) {
+                LoadState ws = browse_load_poll();
+                if (ws == LOAD_DONE) {
+                    browse_load_join();
+                    int new_count = s_load.artists_page.count;
+                    artists_loaded += new_count;
+                    if (artists_loaded > PLEX_MAX_ITEMS) artists_loaded = PLEX_MAX_ITEMS;
+                    if (new_count == 0) artists_total = artists_loaded; /* server lied */
+                    artists_page_loading = false;
+                    dirty = 1;
+                } else if (ws == LOAD_ERROR) {
+                    browse_load_join();
+                    artists_page_loading = false;
+                    /* silent fail — user can retry by scrolling */
+                }
+            }
+
+            /* Count visible items (artists + optional "(Loading...)" sentinel) */
+            int visible_items = artists_loaded + (artists_page_loading ? 1 : 0);
+
+            /* Trigger background page fetch when cursor nears end */
+            if (!artists_page_loading
+                && artists_loaded < artists_total
+                && artists_loaded < PLEX_MAX_ITEMS
+                && artist_selected >= artists_loaded - ARTIST_PAGE_LOOKAHEAD) {
+                s_load.artist_offset = artists_loaded;
+                browse_load_kick(BROWSE_ARTISTS_PAGE, cfg,
+                                 selected_library_id, 0, 0,
+                                 NULL, NULL, artists, NULL, NULL, NULL, NULL);
+                artists_page_loading = true;
+            }
 
             /* Input */
             if (PAD_justRepeated(BTN_UP)) {
@@ -844,22 +893,12 @@ AppModule module_browse_run(SDL_Surface *screen)
                     dirty = 1;
                 }
             } else if (PAD_justPressed(BTN_A)) {
-                if (artists_loaded < artists_total &&
-                    artist_selected == artists_loaded) {
-                    /* "Load more" selected — stays synchronous */
-                    render_loading(screen, false);
-                    PlexPage page;
-                    memset(&page, 0, sizeof(page));
-                    int cap = PLEX_MAX_ITEMS - artists_loaded;
-                    if (cap > 0) {
-                        plex_api_get_artists(cfg, selected_library_id,
-                                             artists_loaded, cap,
-                                             &artists[artists_loaded], &page);
-                        DRAIN_EVENTS();
-                        artists_loaded += page.count;
+                if (artist_selected < artists_loaded) {
+                    /* Cancel any in-flight page load before navigating away */
+                    if (artists_page_loading) {
+                        s_load.cancel = true;
+                        artists_page_loading = false;
                     }
-                    dirty = 1;
-                } else if (artist_selected < artists_loaded) {
                     selected_artist_rating_key = artists[artist_selected].rating_key;
                     albums_ls      = LOAD_IDLE;
                     album_selected = 0;
@@ -869,7 +908,14 @@ AppModule module_browse_run(SDL_Surface *screen)
                     state = BROWSE_ALBUMS;
                     dirty = 1;
                 }
+                /* artist_selected == artists_loaded is the "(Loading...)" sentinel — do nothing */
             } else if (PAD_justPressed(BTN_B)) {
+                /* Cancel any in-flight page load */
+                if (artists_page_loading) {
+                    s_load.cancel = true;
+                    artists_page_loading = false;
+                    /* old thread joined by the next browse_load_kick for BROWSE_LIBRARIES */
+                }
                 /* Back to libraries; reset lib state so it reloads */
                 lib_count       = 0;
                 lib_music_count = 0;
@@ -888,9 +934,10 @@ AppModule module_browse_run(SDL_Surface *screen)
             /* Render */
             if (dirty) {
                 ArtistLabelCtx actx;
-                actx.artists = artists;
-                actx.loaded  = artists_loaded;
-                actx.total   = artists_total;
+                actx.artists      = artists;
+                actx.loaded       = artists_loaded;
+                actx.total        = artists_total;
+                actx.page_loading = artists_page_loading;
 
                 const char *art_line1 = (artist_selected < artists_loaded)
                     ? artists[artist_selected].title : NULL;

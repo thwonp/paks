@@ -636,15 +636,13 @@ AppModule module_player_run(SDL_Surface *screen)
                                   "stopped", Player_getPosition(),
                                   Player_getDuration(), false);
                     Background_setActive(BG_NONE);
-                    if (download_pending) {
-                        dl_ctx.should_cancel = true;
-                        Player_setFileGrowing(false);
-                        pthread_join(dl_thread, NULL);
-                        download_pending = false;
-                    }
-                    Player_stop();
-                    remove(temp_path);
 
+                    /* Save current temp file path before it is overwritten. */
+                    char old_temp_path[768];
+                    strncpy(old_temp_path, temp_path, sizeof(old_temp_path) - 1);
+                    old_temp_path[sizeof(old_temp_path) - 1] = '\0';
+
+                    /* Advance queue and build new paths so we can render first. */
                     plex_queue_prev(cfg);
                     extract_ext(queue->tracks[queue->current_index].media_key,
                                 ext, sizeof(ext));
@@ -652,6 +650,21 @@ AppModule module_player_run(SDL_Surface *screen)
 
                     plex_art_clear();
                     plex_art_fetch(cfg, queue->tracks[queue->current_index].thumb);
+
+                    /* Render the new track's downloading screen immediately — user
+                     * sees the updated title/art before the blocking stop below. */
+                    render_downloading(screen,
+                                       &queue->tracks[queue->current_index], 0);
+
+                    /* Now do the blocking stop/join behind the visible frame. */
+                    if (download_pending) {
+                        dl_ctx.should_cancel = true;
+                        Player_setFileGrowing(false);
+                        pthread_join(dl_thread, NULL);
+                        download_pending = false;
+                    }
+                    Player_stop();
+                    remove(old_temp_path);
 
                     start_download(&dl_ctx, &dl_thread, queue, temp_path);
                     screen_state     = PLAYER_SCREEN_DOWNLOADING;
@@ -667,15 +680,13 @@ AppModule module_player_run(SDL_Surface *screen)
                                   "stopped", Player_getPosition(),
                                   Player_getDuration(), false);
                     Background_setActive(BG_NONE);
-                    if (download_pending) {
-                        dl_ctx.should_cancel = true;
-                        Player_setFileGrowing(false);
-                        pthread_join(dl_thread, NULL);
-                        download_pending = false;
-                    }
-                    Player_stop();
-                    remove(temp_path);
 
+                    /* Save current temp file path before it is overwritten. */
+                    char old_temp_path[768];
+                    strncpy(old_temp_path, temp_path, sizeof(old_temp_path) - 1);
+                    old_temp_path[sizeof(old_temp_path) - 1] = '\0';
+
+                    /* Advance queue and build new paths so we can render first. */
                     plex_queue_next(cfg);
                     extract_ext(queue->tracks[queue->current_index].media_key,
                                 ext, sizeof(ext));
@@ -683,6 +694,21 @@ AppModule module_player_run(SDL_Surface *screen)
 
                     plex_art_clear();
                     plex_art_fetch(cfg, queue->tracks[queue->current_index].thumb);
+
+                    /* Render the new track's downloading screen immediately — user
+                     * sees the updated title/art before the blocking stop below. */
+                    render_downloading(screen,
+                                       &queue->tracks[queue->current_index], 0);
+
+                    /* Now do the blocking stop/join behind the visible frame. */
+                    if (download_pending) {
+                        dl_ctx.should_cancel = true;
+                        Player_setFileGrowing(false);
+                        pthread_join(dl_thread, NULL);
+                        download_pending = false;
+                    }
+                    Player_stop();
+                    remove(old_temp_path);
 
                     start_download(&dl_ctx, &dl_thread, queue, temp_path);
                     screen_state     = PLAYER_SCREEN_DOWNLOADING;
