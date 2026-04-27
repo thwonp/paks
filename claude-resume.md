@@ -1,6 +1,6 @@
 # PlexMusic.pak — Session Resume Document
 
-Last updated: 2026-04-26
+Last updated: 2026-04-27
 
 ---
 
@@ -76,6 +76,7 @@ podman run --rm \
 - Mount the entire opencode repo at the same absolute path — the Makefile uses `../../../../NextUI/` relative paths that must resolve correctly inside the container
 - The toolchain image sets all cross-compile env vars as Docker `ENV` — no bashrc sourcing needed
 - Output binary: `git/paks/PlexMusic/bin/tg5040/plexmusic.elf`
+- Three pre-existing build warnings (not errors): `PADDING` redefined in `module_player.c`, `MAX` in `parson/parson.c`, `strncpy` in NextUI's `generic_wifi.c` — ignore
 
 **libmsettings.so** must be built from source before the first build (it's NOT pre-built in the toolchain):
 ```bash
@@ -129,6 +130,9 @@ Contains: `{ "token": "...", "server_url": "...", "server_name": "...", "server_
 - Now Playing screen — layout correct on Brick (1024×768)
 - Audio playback — MP3, FLAC, WAV, M4A confirmed; OGG/AAC/Opus untested
 - Track load latency reduced from ~60–90 s to ~2–3 s (progressive playback)
+- Browse data loads are fully async — animated loading screen, no frozen UI
+- B-press during album/track/artist load cancels and returns to parent immediately
+- Scrobble and timeline calls are fire-and-forget — no 5s stall during playback
 
 ### No active bugs
 
@@ -151,6 +155,11 @@ Contains: `{ "token": "...", "server_url": "...", "server_name": "...", "server_
 | `[Paused]` overlapping hints bar | Fixed layout leaves only 30px gap between paused indicator and hints | Removed `[Paused]` text; hints line is now state-aware (`[A] Play` vs `[A] Pause`) |
 | Temp file not cleaned up | Missing `remove(temp_path)` on Player_load failure and B-press from ERROR state | Added `remove()` in both paths in `module_player.c` |
 | 60–90 s track load time | Full file downloaded before `Player_load` called; FLAC 30–50 MB at 5 Mbps WiFi | Progressive playback: `Player_load` after 512 KB buffered; stream thread retries EOF while `file_growing` is true |
+| Pressing A after browse load auto-selects first item | PAD state from the A-press that triggered the load was still live when input handling ran in the same frame | Added `GFX_sync(); continue;` at end of success path in each load guard (BROWSE_ARTISTS, BROWSE_ALBUMS, BROWSE_TRACKS) |
+| Zero-result album/track load re-fires every frame | `album_count == 0` / `track_count == 0` guard re-evaluates true after a load returning zero items | Replaced count-based guards with `albums_tried` / `tracks_tried` boolean flags (same pattern as `libs_tried` / `artists_tried`) |
+| UI frozen for up to 5s every 5s during playback | `plex_api_timeline()` and `plex_api_scrobble()` called synchronously on main thread | Fire-and-forget detached pthreads via `fire_scrobble()` in `module_player.c`; main thread returns immediately |
+| UI frozen for up to 15s on library/artist/album/track entry | All four browse data loads blocked the main thread | Moved all four to a shared background pthread worker (`browse_load_worker`); main loop polls `LoadState` and renders animated loading screen |
+| Cancelling BROWSE_ARTISTS load blocked main thread on next frame | B-cancel reset `libs_ls = LOAD_IDLE`, causing BROWSE_LIBRARIES to call `browse_load_kick()` on the next frame which joined the still-running artists thread | Removed `lib_count = 0; lib_music_count = 0; libs_ls = LOAD_IDLE` from B-cancel path; library data stays valid (`libs_ls = LOAD_READY`), skip the kick |
 
 ---
 
@@ -185,6 +194,22 @@ Contains: `{ "token": "...", "server_url": "...", "server_name": "...", "server_
 - **`file_growing` order**: `Player_setFileGrowing(false)` must be called BEFORE `Player_stop()` at all exit points, so the stream thread exits its retry loop cleanly before the join.
 - **M4A moov-at-end**: If `Player_load` fails on the partial file (moov atom not yet downloaded), it falls through to full-download. Worst case is the original 60–90 s wait.
 
+### Browse async workers (`module_browse.c`)
+- **Single shared worker context `s_load`**: Only one load is ever in flight (state machine guarantee). All four load types share it; the `type` field discriminates.
+- **`LoadState` enum**: IDLE → RUNNING → DONE → READY → ERROR. Per-level variables `libs_ls`, `artists_ls`, `albums_ls`, `tracks_ls` replace the old `_tried` booleans. Reset to LOAD_IDLE at all prior `_tried = false` sites.
+- **Memory barrier via `pthread_join`**: Worker writes to module static arrays via pointers; main thread reads only after `browse_load_join()` (which joins the thread). The join provides the memory barrier — no additional fencing needed.
+- **Soft cancel**: Main thread sets `s_load.cancel = true` and transitions state immediately; worker runs to completion then sets LOAD_ERROR (due to cancel flag). Old thread is joined on the next `browse_load_kick()` call.
+- **B-cancel for BROWSE_ARTISTS**: Does NOT reset `lib_count`, `lib_music_count`, or `libs_ls`. Library data stays valid (`libs_ls = LOAD_READY`). Resetting would trigger `browse_load_kick(BROWSE_LIBRARIES)` on the next frame which would immediately join the still-running artists thread. Old thread is joined the next time the user selects a library and BROWSE_ARTISTS kicks.
+- **B-cancel not available for BROWSE_LIBRARIES**: No parent state to return to.
+- **Single-library auto-select**: Only fires in the `LOAD_DONE` handler for BROWSE_LIBRARIES. If the user cancels an artists load and is returned to BROWSE_LIBRARIES with `libs_ls = LOAD_READY`, the auto-select does NOT fire — user sees the library list and must press A deliberately.
+- **`DRAIN_EVENTS()` removed from async load blocks**: No longer needed (main loop runs continuously). Retained only in the synchronous "Load more artists" pagination path.
+- **`pthread_create` failure in `browse_load_kick`**: Sets `thread_started = false` and `status = LOAD_ERROR` under the lock — routes to the error screen, no hang.
+
+### Scrobble fire-and-forget (`module_player.c`)
+- **`fire_scrobble()` helper**: Heap-allocates `ScrobbleCtx`, copies server_url + token + params, spawns a detached pthread. Worker frees ctx on completion. `malloc` / `pthread_create` failures are silent no-ops (scrobble is non-critical).
+- **Five call sites**: periodic "playing" (every 5s), 90% scrobble mark, quit (BTN_START), prev (BTN_LEFT/L1), next (BTN_RIGHT/R1).
+- **Stack-local `PlexConfig` in worker**: Safe because `plex_api_timeline` / `plex_api_scrobble` are fully synchronous and don't retain the pointer.
+
 ---
 
 ## Architecture Summary
@@ -203,18 +228,21 @@ module_auth_run()
   → return MODULE_BROWSE
 
 module_browse_run()            static state, persists across player round-trips
-  → plex_api_get_libraries()   GET /library/sections  (filters type=="artist")
-  → plex_api_get_artists()     paginated, up to PLEX_MAX_ITEMS=200 per page
-  → plex_api_get_albums()      GET /library/metadata/{id}/children
-  → plex_api_get_tracks()      GET /library/metadata/{id}/children
+  → browse_load_worker()       background pthread for all four data loads
+       plex_api_get_libraries()   GET /library/sections
+       plex_api_get_artists()     paginated, up to PLEX_MAX_ITEMS=200 per page
+       plex_api_get_albums()      GET /library/metadata/{id}/children
+       plex_api_get_tracks()      GET /library/metadata/{id}/children
+  → main loop polls LoadState each frame; renders animated loading screen
+  → B-press during load = soft cancel (artist/album/track only)
   → plex_queue_set()           load tracks into queue
   → return MODULE_PLAYER
 
 module_player_run()            playback UI
-  → downloads track to temp file (plex_net_download_file)
+  → downloads track to temp file (plex_net_download_file) — async pthread
   → early-start after 512 KB buffered (MP3/FLAC/WAV/M4A only)
   → player.c                   decodes audio; stream thread retries EOF while file_growing
-  → plex_api_timeline()        scrobble progress to Plex server
+  → fire_scrobble()            detached pthreads for timeline/scrobble — never blocks
   → return MODULE_BROWSE
 
 plex_net.c                     HTTP/HTTPS client
