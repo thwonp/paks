@@ -19,39 +19,43 @@ The pak follows NextUI's pak conventions: `launch.sh` runs `plexmusic.elf`, whic
 
 ## Repo Layout
 
+Repo lives at `git/paks/` (remote: `git@github.com:thwonp/paks.git`).
+
 ```
-paks/PlexMusic.pak/
-  bin/tg5040/
-    plexmusic.elf         ← compiled binary (deploy to SD card)
-    libmsettings.so       ← bundled (NOT on device's library path)
-  res/
-    font.ttf              ← app font (relative path, must match CWD at launch)
-  src/                    ← all C source
-    main.c
-    module_auth.c         ← PIN flow state machine
-    module_browse.c       ← library/artist/album/track browsing
-    module_player.c       ← playback UI
-    module_settings.c
-    module_common.c       ← shared input/overlay logic
-    plex_auth.c           ← plex.tv PIN API calls
-    plex_api.c            ← Plex server REST API
-    plex_net.c            ← HTTP/HTTPS client (mbedTLS)
-    plex_config.c         ← config.json load/save
-    plex_art.c            ← async cover art fetch (pthread)
-    plex_queue.c
-    player.c              ← audio decoding/playback (large file)
-    ui_fonts.c
-    ui_utils.c
-    ui_icons.c
-    Makefile
-    include/
-      mbedtls/            ← mbedTLS 3.x headers (copied from nextui-music-player)
-      mbedtls_lib/        ← mbedTLS 3.x C sources
-      psa/                ← PSA crypto headers (copied from nextui-music-player)
-      parson/             ← JSON parser
-      libogg/, libopus/, opusfile/, fdk-aac/
-      mbedtls_config.h
-      mbedtls_entropy_alt.c
+git/paks/
+  claude-resume.md
+  PlexMusic/                ← becomes PlexMusic.pak on device
+    bin/tg5040/             ← gitignored
+      plexmusic.elf         ← compiled binary (deploy to SD card)
+      libmsettings.so       ← bundled (NOT on device's library path)
+    res/
+      font.ttf              ← app font (relative path, must match CWD at launch)
+    src/                    ← all C source
+      main.c
+      module_auth.c         ← PIN flow state machine
+      module_browse.c       ← library/artist/album/track browsing
+      module_player.c       ← playback UI
+      module_settings.c
+      module_common.c       ← shared input/overlay logic
+      plex_auth.c           ← plex.tv PIN API calls
+      plex_api.c            ← Plex server REST API
+      plex_net.c            ← HTTP/HTTPS client (mbedTLS)
+      plex_config.c         ← config.json load/save
+      plex_art.c            ← async cover art fetch (pthread)
+      plex_queue.c
+      player.c              ← audio decoding/playback (large file)
+      ui_fonts.c
+      ui_utils.c
+      ui_icons.c
+      Makefile
+      include/
+        mbedtls/            ← mbedTLS 3.x headers (copied from nextui-music-player)
+        mbedtls_lib/        ← mbedTLS 3.x C sources
+        psa/                ← PSA crypto headers (copied from nextui-music-player)
+        parson/             ← JSON parser
+        libogg/, libopus/, opusfile/, fdk-aac/
+        mbedtls_config.h
+        mbedtls_entropy_alt.c
 ```
 
 ---
@@ -65,13 +69,13 @@ paks/PlexMusic.pak/
 podman run --rm \
   -v /home/thwonp/opencode:/home/thwonp/opencode \
   ghcr.io/loveretro/tg5040-toolchain:latest \
-  sh -c 'cd /home/thwonp/opencode/paks/PlexMusic.pak/src && make 2>&1'
+  sh -c 'cd /home/thwonp/opencode/git/paks/PlexMusic/src && make 2>&1'
 ```
 
 **Notes:**
-- Mount the entire repo at the same absolute path — the Makefile uses `../../../NextUI/` relative paths that must resolve correctly inside the container
+- Mount the entire opencode repo at the same absolute path — the Makefile uses `../../../../NextUI/` relative paths that must resolve correctly inside the container
 - The toolchain image sets all cross-compile env vars as Docker `ENV` — no bashrc sourcing needed
-- Output binary: `paks/PlexMusic.pak/bin/tg5040/plexmusic.elf`
+- Output binary: `git/paks/PlexMusic/bin/tg5040/plexmusic.elf`
 
 **libmsettings.so** must be built from source before the first build (it's NOT pre-built in the toolchain):
 ```bash
@@ -81,7 +85,7 @@ podman run --rm \
   sh -c 'cd /home/thwonp/opencode/NextUI/workspace/tg5040/libmsettings && \
     ${CROSS_COMPILE}gcc -c -fpic msettings.c && \
     ${CROSS_COMPILE}gcc -shared -o libmsettings.so msettings.o -ltinyalsa -ldl -lrt && \
-    cp libmsettings.so /home/thwonp/opencode/paks/PlexMusic.pak/bin/tg5040/'
+    cp libmsettings.so /home/thwonp/opencode/git/paks/PlexMusic/bin/tg5040/'
 ```
 
 ---
