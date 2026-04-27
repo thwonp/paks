@@ -765,12 +765,9 @@ AppModule module_browse_run(SDL_Surface *screen)
                     if (PAD_justPressed(BTN_B)) {
                         s_load.cancel = true;
                         artists_ls = LOAD_IDLE;
-                        /* Back to libraries; reset lib state so it reloads */
-                        lib_count       = 0;
-                        lib_music_count = 0;
+                        /* Back to libraries; keep lib data valid to avoid join on next frame */
                         lib_selected    = 0;
                         lib_scroll      = 0;
-                        libs_ls         = LOAD_IDLE;
                         last_art_thumb[0] = '\0';
                         plex_art_clear();
                         state = BROWSE_LIBRARIES;
