@@ -15,6 +15,7 @@
 #include "plex_config.h"
 #include "plex_models.h"
 #include "plex_queue.h"
+#include "plex_downloads.h"
 #include "ui_fonts.h"
 #include "ui_utils.h"
 
@@ -436,15 +437,31 @@ static void artist_get_label(int i, char *buf, int size, void *ud)
 typedef struct {
     PlexAlbum *albums;
     int count;
+    bool show_status;   /* true in streaming mode — show [↓]/[✓] indicators */
 } AlbumLabelCtx;
 
 static void album_get_label(int i, char *buf, int size, void *ud)
 {
     AlbumLabelCtx *ctx = (AlbumLabelCtx *)ud;
-    if (ctx->albums[i].year[0])
-        snprintf(buf, size, "%s (%s)", ctx->albums[i].title, ctx->albums[i].year);
+    const PlexAlbum *a = &ctx->albums[i];
+
+    char base[PLEX_MAX_STR + 16];
+    if (a->year[0])
+        snprintf(base, sizeof(base), "%s (%s)", a->title, a->year);
     else
-        snprintf(buf, size, "%s", ctx->albums[i].title);
+        snprintf(base, sizeof(base), "%s", a->title);
+
+    if (ctx->show_status) {
+        DlStatus st = plex_downloads_album_status(a->rating_key);
+        if (st == DL_STATUS_DONE)
+            snprintf(buf, size, "%s \xe2\x9c\x93", base);        /* ✓ */
+        else if (st == DL_STATUS_DOWNLOADING || st == DL_STATUS_QUEUED)
+            snprintf(buf, size, "%s \xe2\x86\x93", base);        /* ↓ */
+        else
+            snprintf(buf, size, "%s", base);
+    } else {
+        snprintf(buf, size, "%s", base);
+    }
 }
 
 typedef struct {
@@ -544,7 +561,8 @@ AppModule module_browse_run(SDL_Surface *screen)
     int dirty = 1;
     int show_setting = 0;
 
-    const PlexConfig *cfg = plex_config_get_mutable();
+    PlexConfig *mutable_cfg = plex_config_get_mutable();
+    const PlexConfig *cfg   = mutable_cfg;
     PLEX_LOG("[DIAG] cfg obtained: server=%s\n", cfg ? cfg->server_url : "(null)");
 
     /* ------------------------------------------------------------------ */
@@ -597,6 +615,24 @@ AppModule module_browse_run(SDL_Surface *screen)
          * BROWSE_LIBRARIES
          * ============================================================== */
         if (state == BROWSE_LIBRARIES) {
+
+            /* Offline mode: skip library loading, go straight to artists */
+            if (cfg->offline_mode) {
+                artists_loaded = plex_downloads_get_artists(artists, PLEX_MAX_ITEMS);
+                artists_total  = artists_loaded;
+                artists_ls     = LOAD_READY;
+                artist_selected = 0;
+                artist_scroll   = 0;
+                artists_page_loading = false;
+                if (artists_loaded > 0 && artists[0].thumb[0]) {
+                    snprintf(last_art_thumb, sizeof(last_art_thumb), "%s", artists[0].thumb);
+                    plex_art_fetch(cfg, artists[0].thumb);
+                }
+                state = BROWSE_ARTISTS;
+                dirty = 1;
+                GFX_sync();
+                continue;
+            }
 
             /* Kick on first entry */
             if (libs_ls == LOAD_IDLE) {
@@ -730,6 +766,38 @@ AppModule module_browse_run(SDL_Surface *screen)
                 }
             } else if (PAD_justPressed(BTN_B)) {
                 return MODULE_QUIT;
+            } else if (PAD_justPressed(BTN_SELECT)) {
+                /* Cancel any running load */
+                if (s_load.thread_started) {
+                    s_load.cancel = true;
+                    pthread_join(s_load.thread, NULL);
+                    s_load.thread_started = false;
+                    pthread_mutex_lock(&s_load.lock);
+                    s_load.status = LOAD_IDLE;
+                    pthread_mutex_unlock(&s_load.lock);
+                }
+                /* Switch to offline */
+                mutable_cfg->offline_mode = true;
+                plex_config_save(mutable_cfg);
+                /* Reset artist state so offline load fires on entry */
+                artists_loaded = 0;
+                artists_total  = 0;
+                artists_ls     = LOAD_IDLE;
+                artist_selected = 0;
+                artist_scroll   = 0;
+                artists_page_loading = false;
+                last_art_thumb[0] = '\0';
+                plex_art_clear();
+                /* Go directly to offline artists */
+                artists_loaded = plex_downloads_get_artists(artists, PLEX_MAX_ITEMS);
+                artists_total  = artists_loaded;
+                artists_ls     = LOAD_READY;
+                if (artists_loaded > 0 && artists[0].thumb[0]) {
+                    snprintf(last_art_thumb, sizeof(last_art_thumb), "%s", artists[0].thumb);
+                    plex_art_fetch(cfg, artists[0].thumb);
+                }
+                state = BROWSE_ARTISTS;
+                dirty = 1;
             }
 
             /* Render */
@@ -756,6 +824,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      NULL, plex_art_get(),
                                      lib_get_label, &lctx,
                                      "SELECT", "QUIT");
+                /* Extra hint for offline mode toggle */
+                GFX_blitButtonGroup((char*[]){"SELECT", "OFFLINE", NULL}, 0, screen, 1);
                 GFX_flip(screen);
                 dirty = 0;
             } else {
@@ -910,6 +980,9 @@ AppModule module_browse_run(SDL_Surface *screen)
                 }
                 /* artist_selected == artists_loaded is the "(Loading...)" sentinel — do nothing */
             } else if (PAD_justPressed(BTN_B)) {
+                if (cfg->offline_mode) {
+                    return MODULE_QUIT;
+                }
                 /* Cancel any in-flight page load */
                 if (artists_page_loading) {
                     s_load.cancel = true;
@@ -917,6 +990,19 @@ AppModule module_browse_run(SDL_Surface *screen)
                     /* old thread joined by the next browse_load_kick for BROWSE_LIBRARIES */
                 }
                 /* Back to libraries; reset lib state so it reloads */
+                lib_count       = 0;
+                lib_music_count = 0;
+                lib_selected    = 0;
+                lib_scroll      = 0;
+                libs_ls         = LOAD_IDLE;
+                last_art_thumb[0] = '\0';
+                plex_art_clear();
+                state = BROWSE_LIBRARIES;
+                dirty = 1;
+            } else if (PAD_justPressed(BTN_SELECT) && cfg->offline_mode) {
+                mutable_cfg->offline_mode = false;
+                plex_config_save(mutable_cfg);
+                /* Reset libs so they reload from network */
                 lib_count       = 0;
                 lib_music_count = 0;
                 lib_selected    = 0;
@@ -942,12 +1028,15 @@ AppModule module_browse_run(SDL_Surface *screen)
                 const char *art_line1 = (artist_selected < artists_loaded)
                     ? artists[artist_selected].title : NULL;
 
-                render_browse_screen(screen, "Artists",
+                const char *artists_header = cfg->offline_mode ? "Artists (Offline)" : "Artists";
+                render_browse_screen(screen, artists_header,
                                      artist_selected, &artist_scroll,
                                      visible_items,
                                      art_line1, NULL, plex_art_get(),
                                      artist_get_label, &actx,
                                      "SELECT", "BACK");
+                if (cfg->offline_mode)
+                    GFX_blitButtonGroup((char*[]){"SELECT", "ONLINE", NULL}, 0, screen, 1);
                 GFX_flip(screen);
                 dirty = 0;
             } else {
@@ -961,6 +1050,18 @@ AppModule module_browse_run(SDL_Surface *screen)
 
             /* Kick on first entry */
             if (albums_ls == LOAD_IDLE) {
+                if (cfg->offline_mode) {
+                    album_count = plex_downloads_get_albums_for_artist(
+                                      selected_artist_rating_key, albums, PLEX_MAX_ITEMS);
+                    albums_ls = LOAD_READY;
+                    if (album_count > 0 && albums[0].thumb[0]) {
+                        snprintf(last_art_thumb, sizeof(last_art_thumb), "%s", albums[0].thumb);
+                        plex_art_fetch(cfg, albums[0].thumb);
+                    }
+                    dirty = 1;
+                    GFX_sync();
+                    continue;
+                }
                 browse_load_kick(BROWSE_ALBUMS, cfg,
                                  0, selected_artist_rating_key, 0,
                                  NULL, NULL, NULL, albums, &album_count, NULL, NULL);
@@ -1069,6 +1170,14 @@ AppModule module_browse_run(SDL_Surface *screen)
                 }
                 state = BROWSE_ARTISTS;
                 dirty = 1;
+            } else if (PAD_justPressed(BTN_Y) && !cfg->offline_mode && album_count > 0) {
+                plex_downloads_queue_album(mutable_cfg,
+                    albums[album_selected].rating_key,
+                    albums[album_selected].title,
+                    artists[artist_selected].rating_key,
+                    artists[artist_selected].title,
+                    albums[album_selected].thumb);
+                dirty = 1;
             }
 
             /* Poll art async */
@@ -1077,8 +1186,9 @@ AppModule module_browse_run(SDL_Surface *screen)
             /* Render */
             if (dirty) {
                 AlbumLabelCtx alctx;
-                alctx.albums = albums;
-                alctx.count  = album_count;
+                alctx.albums       = albums;
+                alctx.count        = album_count;
+                alctx.show_status  = !cfg->offline_mode;
 
                 const char *art_line1 = (album_count > 0)
                     ? albums[album_selected].title : NULL;
@@ -1091,6 +1201,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      art_line1, art_line2, plex_art_get(),
                                      album_get_label, &alctx,
                                      "SELECT", "BACK");
+                if (!cfg->offline_mode)
+                    GFX_blitButtonGroup((char*[]){"Y", "DOWNLOAD", NULL}, 0, screen, 1);
                 GFX_flip(screen);
                 dirty = 0;
             } else {
@@ -1104,6 +1216,15 @@ AppModule module_browse_run(SDL_Surface *screen)
 
             /* Kick on first entry */
             if (tracks_ls == LOAD_IDLE) {
+                if (cfg->offline_mode) {
+                    track_count = plex_downloads_get_tracks_for_album(
+                                      selected_album_rating_key, tracks, PLEX_MAX_ITEMS);
+                    tracks_ls = LOAD_READY;
+                    /* Art is already loaded from album selection */
+                    dirty = 1;
+                    GFX_sync();
+                    continue;
+                }
                 browse_load_kick(BROWSE_TRACKS, cfg,
                                  0, 0, selected_album_rating_key,
                                  NULL, NULL, NULL, NULL, NULL, tracks, &track_count);

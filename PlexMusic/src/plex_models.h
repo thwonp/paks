@@ -13,6 +13,7 @@ typedef struct {
     char relay_url[PLEX_MAX_URL];    /* best relay-tier URL; fallback when LAN unreachable */
     char server_name[PLEX_MAX_STR];
     char server_id[PLEX_MAX_STR];    /* machineIdentifier */
+    bool offline_mode;               /* true = offline browse; persisted to config.json */
 } PlexConfig;
 
 typedef struct {
@@ -52,6 +53,7 @@ typedef struct {
     char album[PLEX_MAX_STR];
     char media_key[PLEX_MAX_URL];    /* streaming path, e.g. /library/parts/123/... */
     char thumb[PLEX_MAX_URL];
+    char local_path[768];            /* non-empty = offline: skip download, play this file */
 } PlexTrack;
 
 /* Generic paginated result */

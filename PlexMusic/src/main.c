@@ -21,6 +21,7 @@
 #include "module_player.h"
 #include "module_settings.h"
 #include "plex_queue.h"
+#include "plex_downloads.h"
 
 /* Global quit flag, set by signal handler */
 static volatile bool g_quit = false;
@@ -110,6 +111,9 @@ int main(int argc, char *argv[]) {
     }
     PLEX_LOG("[DIAG] Player_init done\n");
 
+    plex_downloads_init();
+    PLEX_LOG("[DIAG] plex_downloads_init done\n");
+
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
 
@@ -125,7 +129,8 @@ int main(int argc, char *argv[]) {
     }
     PLEX_LOG("[DIAG] plex_config_load done\n");
 
-    apply_relay_fallback(&g_config);
+    if (!g_config.offline_mode)
+        apply_relay_fallback(&g_config);
     PLEX_LOG("[DIAG] startup URL probe done\n");
 
     /*
@@ -144,7 +149,7 @@ int main(int argc, char *argv[]) {
         switch (current) {
         case MODULE_AUTH:
             next = module_auth_run(screen);
-            if (next == MODULE_BROWSE)
+            if (next == MODULE_BROWSE && !g_config.offline_mode)
                 apply_relay_fallback(&g_config);
             break;
         case MODULE_BROWSE:
@@ -171,6 +176,7 @@ int main(int argc, char *argv[]) {
     }
 
     /* --- Clean shutdown --- */
+    plex_downloads_quit();
     plex_art_cleanup();
     Player_quit();
     Fonts_unload();

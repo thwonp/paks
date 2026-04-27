@@ -93,6 +93,8 @@ int plex_config_load(PlexConfig *cfg)
     if (server_id)
         strncpy(cfg->server_id, server_id, sizeof(cfg->server_id) - 1);
 
+    cfg->offline_mode = (json_object_get_boolean(obj, "offline_mode") == 1);
+
     json_value_free(root);
     return 0;
 }
@@ -108,11 +110,12 @@ int plex_config_save(const PlexConfig *cfg)
     JSON_Value  *root = json_value_init_object();
     JSON_Object *obj  = json_value_get_object(root);
 
-    json_object_set_string(obj, "token",       cfg->token);
-    json_object_set_string(obj, "server_url",  cfg->server_url);
-    json_object_set_string(obj, "relay_url",   cfg->relay_url);
-    json_object_set_string(obj, "server_name", cfg->server_name);
-    json_object_set_string(obj, "server_id",   cfg->server_id);
+    json_object_set_string(obj, "token",        cfg->token);
+    json_object_set_string(obj, "server_url",   cfg->server_url);
+    json_object_set_string(obj, "relay_url",    cfg->relay_url);
+    json_object_set_string(obj, "server_name",  cfg->server_name);
+    json_object_set_string(obj, "server_id",    cfg->server_id);
+    json_object_set_boolean(obj, "offline_mode", cfg->offline_mode ? 1 : 0);
 
     char *json_str = json_serialize_to_string_pretty(root);
     json_value_free(root);
