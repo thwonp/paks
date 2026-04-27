@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
+#include <pthread.h>
 
 #include "api.h"
 #include "plex_log.h"
@@ -28,11 +30,157 @@ typedef enum {
     BROWSE_NET_ERROR,
 } BrowseState;
 
+typedef enum {
+    LOAD_IDLE    = 0,  /* not started or reset */
+    LOAD_RUNNING = 1,  /* thread in flight */
+    LOAD_DONE    = 2,  /* thread finished, results not yet collected */
+    LOAD_READY   = 3,  /* results collected, normal display active */
+    LOAD_ERROR   = 4,  /* network error */
+} LoadState;
+
 /* Width fraction for the list panel (70%) */
 #define LIST_PANEL_FRAC 70
 
 /* Right panel art padding */
 #define ART_PANEL_PAD SCALE1(8)
+
+/* =========================================================================
+ * Async worker
+ * ========================================================================= */
+
+static struct {
+    pthread_t        thread;
+    pthread_mutex_t  lock;           /* protects status field */
+    LoadState        status;         /* current worker status */
+    volatile bool    cancel;         /* set by main thread to discard result */
+    bool             thread_started; /* true if thread created and not yet joined */
+    /* discriminator */
+    BrowseState      type;
+    /* cfg copy (main thread writes before kick; worker reads once at start) */
+    char             server_url[PLEX_MAX_URL];
+    char             token[PLEX_MAX_STR];
+    /* inputs (only the relevant one is used per type) */
+    int              library_id;
+    int              artist_rating_key;
+    int              album_rating_key;
+    /* output pointers — point to module static arrays; worker writes, main reads after DONE */
+    PlexLibrary     *libs;
+    int             *lib_count;
+    PlexArtist      *artists;
+    PlexPage         artists_page;   /* written by worker, read by main on DONE */
+    PlexAlbum       *albums;
+    int             *album_count;
+    PlexTrack       *tracks;
+    int             *track_count;
+} s_load = { .lock = PTHREAD_MUTEX_INITIALIZER };
+
+static void *browse_load_worker(void *arg)
+{
+    (void)arg;
+    /* Copy cfg fields off the shared struct before releasing the lock */
+    PlexConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    pthread_mutex_lock(&s_load.lock);
+    strncpy(cfg.server_url, s_load.server_url, sizeof(cfg.server_url) - 1);
+    strncpy(cfg.token,      s_load.token,      sizeof(cfg.token) - 1);
+    BrowseState type = s_load.type;
+    pthread_mutex_unlock(&s_load.lock);
+
+    int rc = 0;
+    switch (type) {
+        case BROWSE_LIBRARIES:
+            rc = plex_api_get_libraries(&cfg, s_load.libs, s_load.lib_count);
+            break;
+        case BROWSE_ARTISTS: {
+            PlexPage page;
+            memset(&page, 0, sizeof(page));
+            rc = plex_api_get_artists(&cfg, s_load.library_id, 0, PLEX_MAX_ITEMS,
+                                      s_load.artists, &page);
+            pthread_mutex_lock(&s_load.lock);
+            s_load.artists_page = page;
+            pthread_mutex_unlock(&s_load.lock);
+            break;
+        }
+        case BROWSE_ALBUMS:
+            rc = plex_api_get_albums(&cfg, s_load.artist_rating_key,
+                                     s_load.albums, s_load.album_count);
+            break;
+        case BROWSE_TRACKS:
+            rc = plex_api_get_tracks(&cfg, s_load.album_rating_key,
+                                     s_load.tracks, s_load.track_count);
+            break;
+        default:
+            rc = -1;
+    }
+
+    pthread_mutex_lock(&s_load.lock);
+    if (s_load.cancel || rc != 0)
+        s_load.status = LOAD_ERROR;
+    else
+        s_load.status = LOAD_DONE;
+    pthread_mutex_unlock(&s_load.lock);
+
+    return NULL;
+}
+
+/* Populate s_load, (re-)join any existing thread, spawn a new one. */
+static void browse_load_kick(BrowseState type, const PlexConfig *cfg,
+                             int library_id, int artist_rating_key, int album_rating_key,
+                             PlexLibrary *libs, int *lib_count,
+                             PlexArtist *artists,
+                             PlexAlbum *albums, int *album_count,
+                             PlexTrack *tracks, int *track_count)
+{
+    /* Join any previous thread (handles cancelled loads that have since finished) */
+    if (s_load.thread_started) {
+        pthread_join(s_load.thread, NULL);
+        s_load.thread_started = false;
+    }
+
+    pthread_mutex_lock(&s_load.lock);
+    s_load.cancel         = false;
+    s_load.type           = type;
+    strncpy(s_load.server_url, cfg->server_url, sizeof(s_load.server_url) - 1);
+    strncpy(s_load.token,      cfg->token,      sizeof(s_load.token) - 1);
+    s_load.server_url[sizeof(s_load.server_url) - 1] = '\0';
+    s_load.token[sizeof(s_load.token) - 1]           = '\0';
+    s_load.library_id        = library_id;
+    s_load.artist_rating_key = artist_rating_key;
+    s_load.album_rating_key  = album_rating_key;
+    s_load.libs        = libs;       s_load.lib_count   = lib_count;
+    s_load.artists     = artists;
+    s_load.albums      = albums;     s_load.album_count = album_count;
+    s_load.tracks      = tracks;     s_load.track_count = track_count;
+    s_load.status      = LOAD_RUNNING;
+    pthread_mutex_unlock(&s_load.lock);
+
+    if (pthread_create(&s_load.thread, NULL, browse_load_worker, NULL) == 0) {
+        s_load.thread_started = true;
+    } else {
+        s_load.thread_started = false;
+        pthread_mutex_lock(&s_load.lock);
+        s_load.status = LOAD_ERROR;
+        pthread_mutex_unlock(&s_load.lock);
+    }
+}
+
+/* Read current worker status (thread-safe). */
+static LoadState browse_load_poll(void)
+{
+    pthread_mutex_lock(&s_load.lock);
+    LoadState st = s_load.status;
+    pthread_mutex_unlock(&s_load.lock);
+    return st;
+}
+
+/* Join the worker thread (call after seeing DONE or ERROR). */
+static void browse_load_join(void)
+{
+    if (s_load.thread_started) {
+        pthread_join(s_load.thread, NULL);
+        s_load.thread_started = false;
+    }
+}
 
 /* =========================================================================
  * Helpers
@@ -46,17 +194,20 @@ static void format_duration(int ms, char *buf, int size)
     snprintf(buf, size, "%d:%02d", minutes, seconds);
 }
 
-static void render_loading(SDL_Surface *screen)
+static void render_loading(SDL_Surface *screen, bool show_cancel)
 {
+    static const char *labels[] = {"Loading", "Loading.", "Loading..", "Loading..."};
+    int phase = (SDL_GetTicks() / 500) % 4;
     SDL_FillRect(screen, NULL, SDL_MapRGB(screen->format, 0x12, 0x12, 0x12));
-    int hw = screen->w;
-    int hh = screen->h;
-    SDL_Surface *msg = TTF_RenderUTF8_Blended(Fonts_getMedium(), "Loading...", COLOR_WHITE);
+    int hw = screen->w, hh = screen->h;
+    SDL_Surface *msg = TTF_RenderUTF8_Blended(Fonts_getMedium(), labels[phase], COLOR_WHITE);
     if (msg) {
         SDL_BlitSurface(msg, NULL, screen,
                         &(SDL_Rect){(hw - msg->w) / 2, (hh - msg->h) / 2});
         SDL_FreeSurface(msg);
     }
+    if (show_cancel)
+        GFX_blitButtonGroup((char*[]){"B", "BACK", NULL}, 1, screen, 1);
     GFX_flip(screen);
 }
 
@@ -302,6 +453,14 @@ static bool s_browse_initialized = false;
 
 void module_browse_reset(void)
 {
+    if (s_load.thread_started) {
+        s_load.cancel = true;
+        pthread_join(s_load.thread, NULL);
+        s_load.thread_started = false;
+        pthread_mutex_lock(&s_load.lock);
+        s_load.status = LOAD_IDLE;
+        pthread_mutex_unlock(&s_load.lock);
+    }
     s_browse_initialized = false;
 }
 
@@ -321,7 +480,7 @@ AppModule module_browse_run(SDL_Surface *screen)
     static int           lib_scroll        = 0;
     static int           lib_music_count   = 0; /* filtered count */
     static int           lib_music_idx[16];     /* map filtered → original */
-    static bool          libs_tried        = false; /* one-shot load guard */
+    static LoadState     libs_ls           = LOAD_IDLE;
 
     /* Artists */
     static PlexArtist    artists[PLEX_MAX_ITEMS];
@@ -329,21 +488,21 @@ AppModule module_browse_run(SDL_Surface *screen)
     static int           artists_total     = 0;
     static int           artist_selected   = 0;
     static int           artist_scroll     = 0;
-    static bool          artists_tried     = false;
+    static LoadState     artists_ls        = LOAD_IDLE;
 
     /* Albums */
     static PlexAlbum     albums[PLEX_MAX_ITEMS];
     static int           album_count       = 0;
     static int           album_selected    = 0;
     static int           album_scroll      = 0;
-    static bool          albums_tried      = false;
+    static LoadState     albums_ls         = LOAD_IDLE;
 
     /* Tracks */
     static PlexTrack     tracks[PLEX_MAX_ITEMS];
     static int           track_count       = 0;
     static int           track_selected    = 0;
     static int           track_scroll      = 0;
-    static bool          tracks_tried      = false;
+    static LoadState     tracks_ls         = LOAD_IDLE;
 
     /* Selected keys carried between levels */
     static int           selected_library_id       = 0;
@@ -377,18 +536,18 @@ AppModule module_browse_run(SDL_Surface *screen)
         lib_music_count = 0;
         lib_selected    = 0;
         lib_scroll      = 0;
-        libs_tried      = false;
+        libs_ls         = LOAD_IDLE;
         artists_loaded  = 0;
         artists_total   = 0;
-        artists_tried   = false;
+        artists_ls      = LOAD_IDLE;
         artist_selected = 0;
         artist_scroll   = 0;
         album_count     = 0;
-        albums_tried    = false;
+        albums_ls       = LOAD_IDLE;
         album_selected  = 0;
         album_scroll    = 0;
         track_count     = 0;
-        tracks_tried    = false;
+        tracks_ls       = LOAD_IDLE;
         track_selected  = 0;
         track_scroll    = 0;
         last_art_thumb[0] = '\0';
@@ -418,27 +577,44 @@ AppModule module_browse_run(SDL_Surface *screen)
          * ============================================================== */
         if (state == BROWSE_LIBRARIES) {
 
-            /* Load on first entry — one-shot via libs_tried flag */
-            if (!libs_tried) {
-                libs_tried = true;
+            /* Kick on first entry */
+            if (libs_ls == LOAD_IDLE) {
                 PLEX_LOG("[Browse] Loading libraries from: %s\n", cfg->server_url);
-                render_loading(screen);
                 memset(libs, 0, sizeof(libs));
-                int raw_count = 0;
-                plex_api_get_libraries(cfg, libs, &raw_count);
-                DRAIN_EVENTS();
-                PLEX_LOG("[Browse] Got %d libraries (raw)\n", raw_count);
+                lib_count = 0;
+                browse_load_kick(BROWSE_LIBRARIES, cfg,
+                                 0, 0, 0,
+                                 libs, &lib_count,
+                                 NULL, NULL, NULL, NULL, NULL);
+                libs_ls = LOAD_RUNNING;
+            }
+
+            /* Poll running load */
+            if (libs_ls == LOAD_RUNNING) {
+                LoadState ws = browse_load_poll();
+                if (ws == LOAD_DONE || ws == LOAD_ERROR)
+                    libs_ls = ws;
+                else {
+                    render_loading(screen, false);
+                    GFX_sync();
+                    continue;
+                }
+            }
+
+            /* Collect results */
+            if (libs_ls == LOAD_DONE) {
+                browse_load_join();
+                PLEX_LOG("[Browse] Got %d libraries (raw)\n", lib_count);
                 lib_music_count = 0;
-                for (int i = 0; i < raw_count; i++) {
+                for (int i = 0; i < lib_count; i++) {
                     if (strcmp(libs[i].type, "artist") == 0) {
                         lib_music_idx[lib_music_count++] = i;
                     }
                 }
-                lib_count = raw_count;
-
                 PLEX_LOG("[Browse] Music library count: %d\n", lib_music_count);
 
                 if (lib_music_count == 0) {
+                    libs_ls = LOAD_IDLE;
                     net_error_from = BROWSE_LIBRARIES;
                     net_error_back = BROWSE_LIBRARIES;
                     state = BROWSE_NET_ERROR;
@@ -450,18 +626,34 @@ AppModule module_browse_run(SDL_Surface *screen)
                 /* Auto-select if only one music library */
                 if (lib_music_count == 1) {
                     selected_library_id = libs[lib_music_idx[0]].section_id;
-                    artists_loaded = 0;
-                    artists_total  = 0;
-                    artists_tried  = false;
+                    artists_loaded  = 0;
+                    artists_total   = 0;
+                    artists_ls      = LOAD_IDLE;
                     artist_selected = 0;
                     artist_scroll   = 0;
+                    libs_ls = LOAD_READY;
                     state = BROWSE_ARTISTS;
                     dirty = 1;
                     GFX_sync();
                     continue;
                 }
+
                 dirty = 1;
+                libs_ls = LOAD_READY;
             }
+
+            if (libs_ls == LOAD_ERROR) {
+                browse_load_join();
+                libs_ls = LOAD_IDLE;
+                net_error_from = BROWSE_LIBRARIES;
+                net_error_back = BROWSE_LIBRARIES;
+                state = BROWSE_NET_ERROR;
+                dirty = 1;
+                GFX_sync();
+                continue;
+            }
+
+            /* libs_ls == LOAD_READY — normal input + render */
 
             /* Total visible items: music libraries + "Now Playing" (if bg active) + Settings */
             bool bg_active = (Background_getActive() == BG_MUSIC);
@@ -505,9 +697,9 @@ AppModule module_browse_run(SDL_Surface *screen)
                 } else if (lib_music_count > 0 && lib_selected < lib_music_count) {
                     int real_idx = lib_music_idx[lib_selected];
                     selected_library_id = libs[real_idx].section_id;
-                    artists_loaded = 0;
-                    artists_total  = 0;
-                    artists_tried  = false;
+                    artists_loaded  = 0;
+                    artists_total   = 0;
+                    artists_ls      = LOAD_IDLE;
                     artist_selected = 0;
                     artist_scroll   = 0;
                     last_art_thumb[0] = '\0';
@@ -554,37 +746,71 @@ AppModule module_browse_run(SDL_Surface *screen)
          * ============================================================== */
         } else if (state == BROWSE_ARTISTS) {
 
-            /* Load on first entry */
-            if (!artists_tried) {
-                artists_tried = true;
+            /* Kick on first entry */
+            if (artists_ls == LOAD_IDLE) {
                 PLEX_LOG("[Browse] Loading artists for library_id=%d\n", selected_library_id);
-                render_loading(screen);
-                PlexPage page;
-                memset(&page, 0, sizeof(page));
-                int rc = plex_api_get_artists(cfg, selected_library_id, 0, PLEX_MAX_ITEMS,
-                                              artists, &page);
-                DRAIN_EVENTS();
-                if (rc != 0) {
-                    net_error_from = BROWSE_ARTISTS;
-                    net_error_back = BROWSE_LIBRARIES;
-                    state = BROWSE_NET_ERROR;
-                    dirty = 1;
+                browse_load_kick(BROWSE_ARTISTS, cfg,
+                                 selected_library_id, 0, 0,
+                                 NULL, NULL, artists, NULL, NULL, NULL, NULL);
+                artists_ls = LOAD_RUNNING;
+            }
+
+            /* Poll running load */
+            if (artists_ls == LOAD_RUNNING) {
+                LoadState ws = browse_load_poll();
+                if (ws == LOAD_DONE || ws == LOAD_ERROR)
+                    artists_ls = ws;
+                else {
+                    render_loading(screen, true);
+                    if (PAD_justPressed(BTN_B)) {
+                        s_load.cancel = true;
+                        artists_ls = LOAD_IDLE;
+                        /* Back to libraries; reset lib state so it reloads */
+                        lib_count       = 0;
+                        lib_music_count = 0;
+                        lib_selected    = 0;
+                        lib_scroll      = 0;
+                        libs_ls         = LOAD_IDLE;
+                        last_art_thumb[0] = '\0';
+                        plex_art_clear();
+                        state = BROWSE_LIBRARIES;
+                        dirty = 1;
+                    }
                     GFX_sync();
                     continue;
                 }
-                artists_loaded = page.count;
-                artists_total  = page.total;
+            }
+
+            /* Collect results */
+            if (artists_ls == LOAD_DONE) {
+                browse_load_join();
+                artists_loaded = s_load.artists_page.count;
+                artists_total  = s_load.artists_page.total;
                 PLEX_LOG("[Browse] Got %d / %d artists\n", artists_loaded, artists_total);
-                dirty = 1;
 
                 /* Trigger art fetch for initial selection */
                 if (artists_loaded > 0 && artists[0].thumb[0]) {
                     snprintf(last_art_thumb, sizeof(last_art_thumb), "%s", artists[0].thumb);
                     plex_art_fetch(cfg, artists[0].thumb);
                 }
+                dirty = 1;
+                artists_ls = LOAD_READY;
                 GFX_sync();
                 continue;
             }
+
+            if (artists_ls == LOAD_ERROR) {
+                browse_load_join();
+                artists_ls = LOAD_IDLE;
+                net_error_from = BROWSE_ARTISTS;
+                net_error_back = BROWSE_LIBRARIES;
+                state = BROWSE_NET_ERROR;
+                dirty = 1;
+                GFX_sync();
+                continue;
+            }
+
+            /* artists_ls == LOAD_READY — normal input + render */
 
             /* Count visible items (artists + optional "Load more") */
             int visible_items = artists_loaded;
@@ -623,8 +849,8 @@ AppModule module_browse_run(SDL_Surface *screen)
             } else if (PAD_justPressed(BTN_A)) {
                 if (artists_loaded < artists_total &&
                     artist_selected == artists_loaded) {
-                    /* "Load more" selected */
-                    render_loading(screen);
+                    /* "Load more" selected — stays synchronous */
+                    render_loading(screen, false);
                     PlexPage page;
                     memset(&page, 0, sizeof(page));
                     int cap = PLEX_MAX_ITEMS - artists_loaded;
@@ -638,8 +864,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                     dirty = 1;
                 } else if (artist_selected < artists_loaded) {
                     selected_artist_rating_key = artists[artist_selected].rating_key;
-                    album_count    = 0;
-                    albums_tried   = false;
+                    albums_ls      = LOAD_IDLE;
                     album_selected = 0;
                     album_scroll   = 0;
                     last_art_thumb[0] = '\0';
@@ -653,7 +878,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 lib_music_count = 0;
                 lib_selected    = 0;
                 lib_scroll      = 0;
-                libs_tried      = false;
+                libs_ls         = LOAD_IDLE;
                 last_art_thumb[0] = '\0';
                 plex_art_clear();
                 state = BROWSE_LIBRARIES;
@@ -690,31 +915,66 @@ AppModule module_browse_run(SDL_Surface *screen)
          * ============================================================== */
         } else if (state == BROWSE_ALBUMS) {
 
-            /* Load on first entry */
-            if (!albums_tried) {
-                albums_tried = true;
-                render_loading(screen);
-                int rc = plex_api_get_albums(cfg, selected_artist_rating_key,
-                                             albums, &album_count);
-                DRAIN_EVENTS();
-                if (rc != 0) {
-                    net_error_from = BROWSE_ALBUMS;
-                    net_error_back = BROWSE_ARTISTS;
-                    state = BROWSE_NET_ERROR;
-                    dirty = 1;
+            /* Kick on first entry */
+            if (albums_ls == LOAD_IDLE) {
+                browse_load_kick(BROWSE_ALBUMS, cfg,
+                                 0, selected_artist_rating_key, 0,
+                                 NULL, NULL, NULL, albums, &album_count, NULL, NULL);
+                albums_ls = LOAD_RUNNING;
+            }
+
+            /* Poll running load */
+            if (albums_ls == LOAD_RUNNING) {
+                LoadState ws = browse_load_poll();
+                if (ws == LOAD_DONE || ws == LOAD_ERROR)
+                    albums_ls = ws;
+                else {
+                    render_loading(screen, true);
+                    if (PAD_justPressed(BTN_B)) {
+                        s_load.cancel = true;
+                        albums_ls = LOAD_IDLE;
+                        last_art_thumb[0] = '\0';
+                        plex_art_clear();
+                        if (artist_selected < artists_loaded &&
+                            artists[artist_selected].thumb[0]) {
+                            snprintf(last_art_thumb, sizeof(last_art_thumb),
+                                     "%s", artists[artist_selected].thumb);
+                            plex_art_fetch(cfg, artists[artist_selected].thumb);
+                        }
+                        state = BROWSE_ARTISTS;
+                        dirty = 1;
+                    }
                     GFX_sync();
                     continue;
                 }
-                dirty = 1;
+            }
 
-                /* Trigger art for first album */
+            /* Collect results */
+            if (albums_ls == LOAD_DONE) {
+                browse_load_join();
+                /* album_count already written by worker via pointer */
                 if (album_count > 0 && albums[0].thumb[0]) {
                     snprintf(last_art_thumb, sizeof(last_art_thumb), "%s", albums[0].thumb);
                     plex_art_fetch(cfg, albums[0].thumb);
                 }
+                dirty = 1;
+                albums_ls = LOAD_READY;
                 GFX_sync();
                 continue;
             }
+
+            if (albums_ls == LOAD_ERROR) {
+                browse_load_join();
+                albums_ls = LOAD_IDLE;
+                net_error_from = BROWSE_ALBUMS;
+                net_error_back = BROWSE_ARTISTS;
+                state = BROWSE_NET_ERROR;
+                dirty = 1;
+                GFX_sync();
+                continue;
+            }
+
+            /* albums_ls == LOAD_READY — normal input + render */
 
             /* Input */
             if (PAD_justRepeated(BTN_UP)) {
@@ -747,8 +1007,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 selected_album_rating_key = albums[album_selected].rating_key;
                 snprintf(selected_album_thumb, sizeof(selected_album_thumb),
                          "%s", albums[album_selected].thumb);
-                track_count    = 0;
-                tracks_tried   = false;
+                tracks_ls      = LOAD_IDLE;
                 track_selected = 0;
                 track_scroll   = 0;
                 last_art_thumb[0] = '\0';
@@ -799,22 +1058,43 @@ AppModule module_browse_run(SDL_Surface *screen)
          * ============================================================== */
         } else if (state == BROWSE_TRACKS) {
 
-            /* Load tracks on first entry */
-            if (!tracks_tried) {
-                tracks_tried = true;
-                render_loading(screen);
-                int rc = plex_api_get_tracks(cfg, selected_album_rating_key,
-                                             tracks, &track_count);
-                DRAIN_EVENTS();
-                if (rc != 0) {
-                    net_error_from = BROWSE_TRACKS;
-                    net_error_back = BROWSE_ALBUMS;
-                    state = BROWSE_NET_ERROR;
-                    dirty = 1;
+            /* Kick on first entry */
+            if (tracks_ls == LOAD_IDLE) {
+                browse_load_kick(BROWSE_TRACKS, cfg,
+                                 0, 0, selected_album_rating_key,
+                                 NULL, NULL, NULL, NULL, NULL, tracks, &track_count);
+                tracks_ls = LOAD_RUNNING;
+            }
+
+            /* Poll running load */
+            if (tracks_ls == LOAD_RUNNING) {
+                LoadState ws = browse_load_poll();
+                if (ws == LOAD_DONE || ws == LOAD_ERROR)
+                    tracks_ls = ws;
+                else {
+                    render_loading(screen, true);
+                    if (PAD_justPressed(BTN_B)) {
+                        s_load.cancel = true;
+                        tracks_ls = LOAD_IDLE;
+                        last_art_thumb[0] = '\0';
+                        plex_art_clear();
+                        if (album_selected < album_count && albums[album_selected].thumb[0]) {
+                            snprintf(last_art_thumb, sizeof(last_art_thumb),
+                                     "%s", albums[album_selected].thumb);
+                            plex_art_fetch(cfg, albums[album_selected].thumb);
+                        }
+                        state = BROWSE_ALBUMS;
+                        dirty = 1;
+                    }
                     GFX_sync();
                     continue;
                 }
-                dirty = 1;
+            }
+
+            /* Collect results */
+            if (tracks_ls == LOAD_DONE) {
+                browse_load_join();
+                /* track_count already written by worker via pointer */
 
                 /* Fetch album art once — same for all tracks */
                 if (selected_album_thumb[0] &&
@@ -823,9 +1103,24 @@ AppModule module_browse_run(SDL_Surface *screen)
                              "%s", selected_album_thumb);
                     plex_art_fetch(cfg, selected_album_thumb);
                 }
+                dirty = 1;
+                tracks_ls = LOAD_READY;
                 GFX_sync();
                 continue;
             }
+
+            if (tracks_ls == LOAD_ERROR) {
+                browse_load_join();
+                tracks_ls = LOAD_IDLE;
+                net_error_from = BROWSE_TRACKS;
+                net_error_back = BROWSE_ALBUMS;
+                state = BROWSE_NET_ERROR;
+                dirty = 1;
+                GFX_sync();
+                continue;
+            }
+
+            /* tracks_ls == LOAD_READY — normal input + render */
 
             /* Input */
             if (PAD_justRepeated(BTN_UP)) {
@@ -895,10 +1190,10 @@ AppModule module_browse_run(SDL_Surface *screen)
             if (PAD_justPressed(BTN_A)) {
                 /* Retry: reset the load guard for the failed state */
                 switch (net_error_from) {
-                    case BROWSE_LIBRARIES: libs_tried    = false; break;
-                    case BROWSE_ARTISTS:   artists_tried = false; break;
-                    case BROWSE_ALBUMS:    album_count = 0; albums_tried = false; break;
-                    case BROWSE_TRACKS:    track_count = 0; tracks_tried = false; break;
+                    case BROWSE_LIBRARIES: libs_ls    = LOAD_IDLE; break;
+                    case BROWSE_ARTISTS:   artists_ls = LOAD_IDLE; break;
+                    case BROWSE_ALBUMS:    albums_ls  = LOAD_IDLE; break;
+                    case BROWSE_TRACKS:    tracks_ls  = LOAD_IDLE; break;
                     default: break;
                 }
                 state = net_error_from;
