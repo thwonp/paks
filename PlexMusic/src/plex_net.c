@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <fcntl.h>
 
 #include <zlib.h>
 
@@ -20,6 +21,63 @@
 #include "psa/crypto.h"
 
 #include "api.h"   /* LOG_error / LOG_info */
+
+/*
+ * Resolve host:port, connect with timeout. Returns connected fd >= 0, or -1.
+ * Restores blocking mode on the returned fd.
+ */
+static int tcp_connect_timeout(const char *host, const char *port_str, int timeout_sec)
+{
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res) {
+        if (res) freeaddrinfo(res);
+        return -1;
+    }
+
+    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (fd < 0) { freeaddrinfo(res); return -1; }
+
+    /* Set non-blocking */
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
+    int rc = connect(fd, res->ai_addr, res->ai_addrlen);
+    freeaddrinfo(res);
+
+    if (rc < 0 && errno != EINPROGRESS) {
+        close(fd);
+        return -1;
+    }
+
+    if (rc != 0) {
+        /* Wait for connection to complete or timeout */
+        fd_set wfds;
+        FD_ZERO(&wfds);
+        FD_SET(fd, &wfds);
+        struct timeval tv = { timeout_sec, 0 };
+        int sel = select(fd + 1, NULL, &wfds, NULL, &tv);
+        if (sel <= 0) {
+            /* timeout or error */
+            close(fd);
+            return -1;
+        }
+        int err = 0;
+        socklen_t errlen = sizeof(err);
+        getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen);
+        if (err != 0) {
+            close(fd);
+            return -1;
+        }
+    }
+
+    /* Restore blocking */
+    fcntl(fd, F_SETFL, flags);
+    return fd;
+}
 
 /* Call once before any TLS operation — required by mbedTLS 3.x with PSA/TLS 1.3 */
 static void plex_net_psa_init(void)
@@ -188,10 +246,12 @@ static PlexSSLCtx *ssl_ctx_connect(const char *host, int port, int timeout_sec)
     char port_str[16];
     snprintf(port_str, sizeof(port_str), "%d", port);
 
-    if (mbedtls_net_connect(&ctx->net, host, port_str, MBEDTLS_NET_PROTO_TCP) != 0) {
+    int tcp_fd = tcp_connect_timeout(host, port_str, timeout_sec);
+    if (tcp_fd < 0) {
         ssl_ctx_free(ctx);
         return NULL;
     }
+    ctx->net.fd = tcp_fd;
 
     struct timeval tv = { timeout_sec, 0 };
     setsockopt(ctx->net.fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -397,37 +457,16 @@ static int plex_net_fetch_internal(const char *url,
         }
         sock_fd = ssl_ctx->net.fd;
     } else {
-        struct addrinfo hints, *result = NULL;
-        memset(&hints, 0, sizeof(hints));
-        hints.ai_family   = AF_INET;
-        hints.ai_socktype = SOCK_STREAM;
-
         char port_str[16];
         snprintf(port_str, sizeof(port_str), "%d", port);
-
-        if (getaddrinfo(host, port_str, &hints, &result) != 0 || !result) {
-            LOG_error("[PlexNet] getaddrinfo failed for: %s\n", host);
-            if (result) freeaddrinfo(result);
-            free(req); free(host); free(path); return -1;
-        }
-
-        sock_fd = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+        sock_fd = tcp_connect_timeout(host, port_str, timeout_sec);
         if (sock_fd < 0) {
-            freeaddrinfo(result);
+            LOG_error("[PlexNet] connect failed: %s:%d\n", host, port);
             free(req); free(host); free(path); return -1;
         }
-
         struct timeval tv = { timeout_sec, 0 };
         setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         setsockopt(sock_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-        if (connect(sock_fd, result->ai_addr, result->ai_addrlen) < 0) {
-            LOG_error("[PlexNet] connect failed: %s\n", strerror(errno));
-            close(sock_fd);
-            freeaddrinfo(result);
-            free(req); free(host); free(path); return -1;
-        }
-        freeaddrinfo(result);
     }
 
     /* Send request */
@@ -723,37 +762,16 @@ static int plex_net_download_file_internal(const char *url,
         }
         sock_fd = ssl_ctx->net.fd;
     } else {
-        struct addrinfo hints, *ai_result = NULL;
-        memset(&hints, 0, sizeof(hints));
-        hints.ai_family   = AF_INET;
-        hints.ai_socktype = SOCK_STREAM;
-
         char port_str[16];
         snprintf(port_str, sizeof(port_str), "%d", port);
-
-        if (getaddrinfo(host, port_str, &hints, &ai_result) != 0 || !ai_result) {
-            LOG_error("[PlexNet] download: getaddrinfo failed for: %s\n", host);
-            if (ai_result) freeaddrinfo(ai_result);
-            free(req); free(host); free(path); return -1;
-        }
-
-        sock_fd = socket(ai_result->ai_family, ai_result->ai_socktype, ai_result->ai_protocol);
+        sock_fd = tcp_connect_timeout(host, port_str, timeout_sec);
         if (sock_fd < 0) {
-            freeaddrinfo(ai_result);
+            LOG_error("[PlexNet] connect failed: %s:%d\n", host, port);
             free(req); free(host); free(path); return -1;
         }
-
         struct timeval tv = { timeout_sec, 0 };
         setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         setsockopt(sock_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-        if (connect(sock_fd, ai_result->ai_addr, ai_result->ai_addrlen) < 0) {
-            LOG_error("[PlexNet] download: connect failed: %s\n", strerror(errno));
-            close(sock_fd);
-            freeaddrinfo(ai_result);
-            free(req); free(host); free(path); return -1;
-        }
-        freeaddrinfo(ai_result);
     }
 
     /* Send request */
