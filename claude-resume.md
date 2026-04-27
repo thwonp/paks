@@ -1,6 +1,6 @@
 # PlexMusic.pak — Session Resume Document
 
-Last updated: 2026-04-27 (session 3)
+Last updated: 2026-04-27
 
 ---
 
@@ -42,7 +42,6 @@ git/paks/
       plex_net.c            ← HTTP/HTTPS client (mbedTLS)
       plex_config.c         ← config.json load/save
       plex_art.c            ← async cover art fetch (pthread)
-      plex_downloads.c      ← offline download manifest, queue, worker
       plex_queue.c
       player.c              ← audio decoding/playback (large file)
       ui_fonts.c
@@ -134,16 +133,11 @@ Contains: `{ "token": "...", "server_url": "...", "server_name": "...", "server_
 - Browse data loads are fully async — animated loading screen, no frozen UI
 - B-press during album/track/artist load cancels and returns to parent immediately
 - Scrobble and timeline calls are fire-and-forget — no 5s stall during playback
-- Remote connection support — prefers direct/local, falls back to non-local URL
-
-### Implemented but NOT yet tested on device
-- **Offline download persistence** — see "Offline Mode" section below
 
 ### No active bugs
 
 ### Remaining deferred work
 - Remove `[DIAG] fprintf` logging from `main.c` and `module_browse.c` (deferred by user — leave for now)
-- Remote connection not yet confirmed working end-to-end (server was offline during testing; logic is correct based on logs)
 
 ---
 
@@ -166,8 +160,6 @@ Contains: `{ "token": "...", "server_url": "...", "server_name": "...", "server_
 | UI frozen for up to 5s every 5s during playback | `plex_api_timeline()` and `plex_api_scrobble()` called synchronously on main thread | Fire-and-forget detached pthreads via `fire_scrobble()` in `module_player.c`; main thread returns immediately |
 | UI frozen for up to 15s on library/artist/album/track entry | All four browse data loads blocked the main thread | Moved all four to a shared background pthread worker (`browse_load_worker`); main loop polls `LoadState` and renders animated loading screen |
 | Cancelling BROWSE_ARTISTS load blocked main thread on next frame | B-cancel reset `libs_ls = LOAD_IDLE`, causing BROWSE_LIBRARIES to call `browse_load_kick()` on the next frame which joined the still-running artists thread | Removed `lib_count = 0; lib_music_count = 0; libs_ls = LOAD_IDLE` from B-cancel path; library data stays valid (`libs_ls = LOAD_READY`), skip the kick |
-| B-press from BROWSE_LIBRARIES error screen trapped user (no exit) | `net_error_back = BROWSE_LIBRARIES`; pressing B set `state = BROWSE_LIBRARIES` which immediately re-entered the error | When `net_error_back == BROWSE_LIBRARIES`, B-press returns `MODULE_QUIT` to launcher |
-| App only ever tried the best-ranked (local) connection URL | `plex_auth_get_servers` picked first connection URI; no remote/relay fallback | Connection ranking: `local > non-local > relay`, prefer non-plex.direct over plex.direct within tier; `relay_url` (best non-local connection) saved to config at login; `apply_relay_fallback()` probes `server_url` at startup and after auth, switches to `relay_url` for the session if unreachable |
 
 ---
 
@@ -213,43 +205,6 @@ Contains: `{ "token": "...", "server_url": "...", "server_name": "...", "server_
 - **`DRAIN_EVENTS()` removed from async load blocks**: No longer needed (main loop runs continuously). Retained only in the synchronous "Load more artists" pagination path.
 - **`pthread_create` failure in `browse_load_kick`**: Sets `thread_started = false` and `status = LOAD_ERROR` under the lock — routes to the error screen, no hang.
 
-### Remote connection / URL selection (`plex_auth.c`, `main.c`)
-- **`conn_rank()` scoring**: `tier*4 + plex_direct*2 + https_penalty`. Tier 0 = local, 1 = non-relay non-local, 2 = relay. plex.direct penalty = 1 (prefer raw IP connections — plex.direct DNS can fail on some networks/hotspots). HTTPS penalty = 0 (prefer HTTPS over HTTP within same tier+plex_direct combination).
-- **`relay_url` in config**: populated at login by `best_nonlocal_uri()` — best-ranked connection where `local != 1`. Saved to `config.json`. Empty on configs saved before this feature; those configs skip the fallback probe silently.
-- **`apply_relay_fallback()`**: called (1) at startup if config is valid and `relay_url` is non-empty, (2) in the main loop right after `MODULE_AUTH` transitions to `MODULE_BROWSE`. Probes `{server_url}/identity` with 3s timeout; if unreachable, sets `server_url = relay_url` for the session only (not persisted).
-- **DNS vs TCP failure**: `tcp_connect_timeout` now logs `[PlexNet] DNS lookup failed: <host>` separately from TCP connect errors. "SSL connect failed" without a preceding DNS failure = TCP refused/timeout; with DNS failure = hostname not resolving.
-- **plex.tv DNS failure on hotspot**: confirmed in testing — `plex.tv` DNS fails on some mobile hotspots while `*.plex.direct` DNS works. Auth flow retries so this is usually transient.
-- **Fresh login required** after this feature to populate `relay_url` in config.json.
-
-### Offline mode (`plex_downloads.c`, `module_browse.c`, `module_player.c`)
-
-**Data files:**
-- Manifest: `$SHARED_USERDATA_PATH/plexmusic/downloads.json` — JSON array of downloaded albums + tracks
-- Download files: `$SHARED_USERDATA_PATH/plexmusic/downloads/{album_id}/{track_id}.{ext}`
-- `offline_mode` boolean persisted in `config.json`
-
-**Manifest loading:** On `plex_downloads_init()`, manifest is loaded and any album with a missing track file is discarded (partial downloads from interrupted sessions are ignored, not retried).
-
-**Mode toggle:**
-- Streaming mode: SELECT at BROWSE_LIBRARIES → saves `offline_mode=true` → jumps to BROWSE_ARTISTS (offline)
-- Offline mode: SELECT at BROWSE_ARTISTS → saves `offline_mode=false` → jumps to BROWSE_LIBRARIES (streaming)
-- First app launch after offline download: if `offline_mode` was saved, app starts at BROWSE_LIBRARIES which immediately redirects to BROWSE_ARTISTS from the offline bypass block
-
-**Offline browse flow:** All three browse levels (artists/albums/tracks) call `plex_downloads_get_*` functions synchronously (no worker thread, no async). BROWSE_LIBRARIES is never shown in offline mode — the bypass block at the top of the BROWSE_LIBRARIES state redirects immediately.
-
-**Offline playback:** `plex_downloads_get_tracks_for_album()` sets `PlexTrack.local_path`. `plex_queue_set` skips `plex_api_get_stream_url` when `local_path` is non-empty (leaves `stream_url` empty). `module_player.c` detects `is_local_file` from `local_path` and skips all download machinery — calls `Player_load(local_path)` directly, never calls `remove()` on a local file.
-
-**Download queue:**
-- BTN_Y in BROWSE_ALBUMS (streaming mode only) calls `plex_downloads_queue_album()`
-- Worker fetches track listing from Plex API, then downloads each track sequentially
-- On each track completion: updates in-memory manifest and writes `downloads.json`
-- Album status checked via `plex_downloads_album_status()` for ✓/↓ indicators in album list
-- Max 8 albums in queue; silently drops if full; no-op if already downloaded or queued
-
-**Relay probe skip:** `apply_relay_fallback()` is skipped when `offline_mode` is true (no network probe at startup or after auth).
-
-**Known limitation:** Cover art in offline mode fetches from the Plex server (thumb URL). If server is unreachable, art panel is empty. Acceptable — art fetch is fire-and-forget and fails gracefully.
-
 ### Scrobble fire-and-forget (`module_player.c`)
 - **`fire_scrobble()` helper**: Heap-allocates `ScrobbleCtx`, copies server_url + token + params, spawns a detached pthread. Worker frees ctx on completion. `malloc` / `pthread_create` failures are silent no-ops (scrobble is non-critical).
 - **Five call sites**: periodic "playing" (every 5s), 90% scrobble mark, quit (BTN_START), prev (BTN_LEFT/L1), next (BTN_RIGHT/R1).
@@ -262,18 +217,14 @@ Contains: `{ "token": "...", "server_url": "...", "server_name": "...", "server_
 ```
 main.c
   → plex_config_load()         load saved token+server
-  → apply_relay_fallback()     probe server_url; switch to relay_url if unreachable
   → Player_init()              open SDL audio device
   → MODULE_AUTH or MODULE_BROWSE (depending on config validity)
-  → after MODULE_AUTH → MODULE_BROWSE: apply_relay_fallback() again (fresh login path)
 
 module_auth_run()
   → plex_auth_create_pin()     POST /api/v2/pins (strong=false)
   → poll plex_auth_check_pin() every 2s for up to 120s
   → plex_auth_get_servers()    GET /api/v2/resources?includeHttps=1
-       ranks connections: local > non-local > relay, non-plex.direct preferred
-       saves best URL as server_url, best non-local URL as relay_url
-  → plex_config_save()         write token+server_url+relay_url to config.json
+  → plex_config_save()         write token+server_url to config.json
   → return MODULE_BROWSE
 
 module_browse_run()            static state, persists across player round-trips
