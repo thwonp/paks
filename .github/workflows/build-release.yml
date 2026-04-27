@@ -1,0 +1,72 @@
+name: Build & Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. v1.2.0)'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      VERSION: ${{ github.event.inputs.version }}
+
+    steps:
+      - name: Checkout paks
+        uses: actions/checkout@v4
+        with:
+          path: opencode/git/paks
+
+      - name: Clone NextUI
+        run: git clone --depth 1 https://github.com/LoveRetro/NextUI.git opencode/NextUI
+
+      - name: Create output dir
+        run: mkdir -p opencode/git/paks/PlexMusic/bin/tg5040
+
+      - name: Pull toolchain image
+        run: docker pull ghcr.io/loveretro/tg5040-toolchain:latest
+
+      - name: Build libmsettings.so
+        run: |
+          WS=$GITHUB_WORKSPACE
+          docker run --rm \
+            -v "$WS:$WS" \
+            ghcr.io/loveretro/tg5040-toolchain:latest \
+            sh -c '
+              cd '"$WS"'/opencode/NextUI/workspace/tg5040/libmsettings
+              ${CROSS_COMPILE}gcc -c -fpic msettings.c
+              ${CROSS_COMPILE}gcc -shared -o libmsettings.so msettings.o -ltinyalsa -ldl -lrt
+              cp libmsettings.so '"$WS"'/opencode/git/paks/PlexMusic/bin/tg5040/
+            '
+
+      - name: Build plexmusic.elf
+        run: |
+          WS=$GITHUB_WORKSPACE
+          docker run --rm \
+            -v "$WS:$WS" \
+            ghcr.io/loveretro/tg5040-toolchain:latest \
+            sh -c 'cd '"$WS"'/opencode/git/paks/PlexMusic/src && make 2>&1'
+
+      - name: Package zip
+        run: |
+          mkdir -p staging/PlexMusic.pak
+          mkdir -p staging/PlexMusic.pak/bin/tg5040
+          cp opencode/git/paks/PlexMusic/launch.sh staging/PlexMusic.pak/
+          cp opencode/git/paks/PlexMusic/pak.json staging/PlexMusic.pak/
+          cp -r opencode/git/paks/PlexMusic/res/ staging/PlexMusic.pak/res/
+          cp opencode/git/paks/PlexMusic/bin/tg5040/plexmusic.elf staging/PlexMusic.pak/bin/tg5040/
+          cp opencode/git/paks/PlexMusic/bin/tg5040/libmsettings.so staging/PlexMusic.pak/bin/tg5040/
+          jq --arg v "$VERSION" '.version = $v' staging/PlexMusic.pak/pak.json > tmp.json && mv tmp.json staging/PlexMusic.pak/pak.json
+          cd staging && zip -r "../PlexMusic-${VERSION}.zip" PlexMusic.pak/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$VERSION" \
+            --title "PlexMusic $VERSION" \
+            "PlexMusic-${VERSION}.zip"
