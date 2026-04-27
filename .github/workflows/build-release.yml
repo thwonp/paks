@@ -7,6 +7,11 @@ on:
         description: 'Release version (e.g. v1.2.0)'
         required: true
         type: string
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -67,6 +72,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          PRERELEASE_FLAG=""
+          [ "${{ github.event.inputs.prerelease }}" = "true" ] && PRERELEASE_FLAG="--prerelease"
           gh release create "$VERSION" \
             --title "PlexMusic $VERSION" \
+            $PRERELEASE_FLAG \
             "PlexMusic-${VERSION}.zip"
