@@ -336,12 +336,14 @@ AppModule module_browse_run(SDL_Surface *screen)
     static int           album_count       = 0;
     static int           album_selected    = 0;
     static int           album_scroll      = 0;
+    static bool          albums_tried      = false;
 
     /* Tracks */
     static PlexTrack     tracks[PLEX_MAX_ITEMS];
     static int           track_count       = 0;
     static int           track_selected    = 0;
     static int           track_scroll      = 0;
+    static bool          tracks_tried      = false;
 
     /* Selected keys carried between levels */
     static int           selected_library_id       = 0;
@@ -382,9 +384,11 @@ AppModule module_browse_run(SDL_Surface *screen)
         artist_selected = 0;
         artist_scroll   = 0;
         album_count     = 0;
+        albums_tried    = false;
         album_selected  = 0;
         album_scroll    = 0;
         track_count     = 0;
+        tracks_tried    = false;
         track_selected  = 0;
         track_scroll    = 0;
         last_art_thumb[0] = '\0';
@@ -635,6 +639,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 } else if (artist_selected < artists_loaded) {
                     selected_artist_rating_key = artists[artist_selected].rating_key;
                     album_count    = 0;
+                    albums_tried   = false;
                     album_selected = 0;
                     album_scroll   = 0;
                     last_art_thumb[0] = '\0';
@@ -686,7 +691,8 @@ AppModule module_browse_run(SDL_Surface *screen)
         } else if (state == BROWSE_ALBUMS) {
 
             /* Load on first entry */
-            if (album_count == 0) {
+            if (!albums_tried) {
+                albums_tried = true;
                 render_loading(screen);
                 int rc = plex_api_get_albums(cfg, selected_artist_rating_key,
                                              albums, &album_count);
@@ -742,6 +748,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 snprintf(selected_album_thumb, sizeof(selected_album_thumb),
                          "%s", albums[album_selected].thumb);
                 track_count    = 0;
+                tracks_tried   = false;
                 track_selected = 0;
                 track_scroll   = 0;
                 last_art_thumb[0] = '\0';
@@ -793,7 +800,8 @@ AppModule module_browse_run(SDL_Surface *screen)
         } else if (state == BROWSE_TRACKS) {
 
             /* Load tracks on first entry */
-            if (track_count == 0) {
+            if (!tracks_tried) {
+                tracks_tried = true;
                 render_loading(screen);
                 int rc = plex_api_get_tracks(cfg, selected_album_rating_key,
                                              tracks, &track_count);
@@ -889,8 +897,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                 switch (net_error_from) {
                     case BROWSE_LIBRARIES: libs_tried    = false; break;
                     case BROWSE_ARTISTS:   artists_tried = false; break;
-                    case BROWSE_ALBUMS:    album_count   = 0;     break;
-                    case BROWSE_TRACKS:    track_count   = 0;     break;
+                    case BROWSE_ALBUMS:    album_count = 0; albums_tried = false; break;
+                    case BROWSE_TRACKS:    track_count = 0; tracks_tried = false; break;
                     default: break;
                 }
                 state = net_error_from;
