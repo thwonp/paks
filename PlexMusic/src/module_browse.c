@@ -25,6 +25,7 @@ typedef enum {
     BROWSE_ARTISTS,
     BROWSE_ALBUMS,
     BROWSE_TRACKS,
+    BROWSE_NET_ERROR,
 } BrowseState;
 
 /* Width fraction for the list panel (70%) */
@@ -56,6 +57,30 @@ static void render_loading(SDL_Surface *screen)
                         &(SDL_Rect){(hw - msg->w) / 2, (hh - msg->h) / 2});
         SDL_FreeSurface(msg);
     }
+    GFX_flip(screen);
+}
+
+static void render_net_error(SDL_Surface *screen)
+{
+    SDL_FillRect(screen, NULL, SDL_MapRGB(screen->format, 0x12, 0x12, 0x12));
+    int hw = screen->w;
+    int hh = screen->h;
+    SDL_Surface *msg = TTF_RenderUTF8_Blended(Fonts_getMedium(), "Network error.",
+                                               (SDL_Color){0xE5, 0x45, 0x45, 0xFF});
+    if (msg) {
+        SDL_BlitSurface(msg, NULL, screen,
+                        &(SDL_Rect){(hw - msg->w) / 2, hh / 2 - SCALE1(20)});
+        SDL_FreeSurface(msg);
+    }
+    SDL_Surface *hint = TTF_RenderUTF8_Blended(Fonts_getSmall(),
+                                                "Press A to retry, B to go back",
+                                                COLOR_LIGHT_TEXT);
+    if (hint) {
+        SDL_BlitSurface(hint, NULL, screen,
+                        &(SDL_Rect){(hw - hint->w) / 2, hh / 2 + SCALE1(10)});
+        SDL_FreeSurface(hint);
+    }
+    GFX_blitButtonGroup((char*[]){"A", "RETRY", "B", "BACK", NULL}, 1, screen, 1);
     GFX_flip(screen);
 }
 
@@ -327,6 +352,10 @@ AppModule module_browse_run(SDL_Surface *screen)
     /* Art fetch state: last thumb that was requested */
     static char          last_art_thumb[PLEX_MAX_URL] = "";
 
+    /* Net error state */
+    static BrowseState net_error_from = BROWSE_LIBRARIES; /* state that failed  */
+    static BrowseState net_error_back = BROWSE_LIBRARIES; /* parent to go to on B */
+
     /* ------------------------------------------------------------------ */
     /* Per-frame locals                                                    */
     /* ------------------------------------------------------------------ */
@@ -364,6 +393,7 @@ AppModule module_browse_run(SDL_Surface *screen)
     /* ------------------------------------------------------------------ */
     /* Main event loop                                                     */
     /* ------------------------------------------------------------------ */
+#define DRAIN_EVENTS() do { SDL_Event _e; while (SDL_PollEvent(&_e)) {} } while(0)
     while (1) {
         GFX_startFrame();
         PAD_poll();
@@ -392,6 +422,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 memset(libs, 0, sizeof(libs));
                 int raw_count = 0;
                 plex_api_get_libraries(cfg, libs, &raw_count);
+                DRAIN_EVENTS();
                 PLEX_LOG("[Browse] Got %d libraries (raw)\n", raw_count);
                 lib_music_count = 0;
                 for (int i = 0; i < raw_count; i++) {
@@ -402,6 +433,15 @@ AppModule module_browse_run(SDL_Surface *screen)
                 lib_count = raw_count;
 
                 PLEX_LOG("[Browse] Music library count: %d\n", lib_music_count);
+
+                if (lib_music_count == 0) {
+                    net_error_from = BROWSE_LIBRARIES;
+                    net_error_back = BROWSE_LIBRARIES;
+                    state = BROWSE_NET_ERROR;
+                    dirty = 1;
+                    GFX_sync();
+                    continue;
+                }
 
                 /* Auto-select if only one music library */
                 if (lib_music_count == 1) {
@@ -519,15 +559,11 @@ AppModule module_browse_run(SDL_Surface *screen)
                 memset(&page, 0, sizeof(page));
                 int rc = plex_api_get_artists(cfg, selected_library_id, 0, PLEX_MAX_ITEMS,
                                               artists, &page);
+                DRAIN_EVENTS();
                 if (rc != 0) {
-                    lib_count       = 0;
-                    lib_music_count = 0;
-                    lib_selected    = 0;
-                    lib_scroll      = 0;
-                    libs_tried      = false;
-                    last_art_thumb[0] = '\0';
-                    plex_art_clear();
-                    state = BROWSE_LIBRARIES;
+                    net_error_from = BROWSE_ARTISTS;
+                    net_error_back = BROWSE_LIBRARIES;
+                    state = BROWSE_NET_ERROR;
                     dirty = 1;
                     GFX_sync();
                     continue;
@@ -590,6 +626,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                         plex_api_get_artists(cfg, selected_library_id,
                                              artists_loaded, cap,
                                              &artists[artists_loaded], &page);
+                        DRAIN_EVENTS();
                         artists_loaded += page.count;
                     }
                     dirty = 1;
@@ -651,14 +688,11 @@ AppModule module_browse_run(SDL_Surface *screen)
                 render_loading(screen);
                 int rc = plex_api_get_albums(cfg, selected_artist_rating_key,
                                              albums, &album_count);
+                DRAIN_EVENTS();
                 if (rc != 0) {
-                    last_art_thumb[0] = '\0';
-                    plex_art_clear();
-                    if (artist_selected < artists_loaded && artists[artist_selected].thumb[0]) {
-                        snprintf(last_art_thumb, sizeof(last_art_thumb), "%s", artists[artist_selected].thumb);
-                        plex_art_fetch(cfg, artists[artist_selected].thumb);
-                    }
-                    state = BROWSE_ARTISTS;
+                    net_error_from = BROWSE_ALBUMS;
+                    net_error_back = BROWSE_ARTISTS;
+                    state = BROWSE_NET_ERROR;
                     dirty = 1;
                     GFX_sync();
                     continue;
@@ -759,14 +793,11 @@ AppModule module_browse_run(SDL_Surface *screen)
                 render_loading(screen);
                 int rc = plex_api_get_tracks(cfg, selected_album_rating_key,
                                              tracks, &track_count);
+                DRAIN_EVENTS();
                 if (rc != 0) {
-                    last_art_thumb[0] = '\0';
-                    plex_art_clear();
-                    if (album_selected < album_count && albums[album_selected].thumb[0]) {
-                        snprintf(last_art_thumb, sizeof(last_art_thumb), "%s", albums[album_selected].thumb);
-                        plex_art_fetch(cfg, albums[album_selected].thumb);
-                    }
-                    state = BROWSE_ALBUMS;
+                    net_error_from = BROWSE_TRACKS;
+                    net_error_back = BROWSE_ALBUMS;
+                    state = BROWSE_NET_ERROR;
                     dirty = 1;
                     GFX_sync();
                     continue;
@@ -837,6 +868,56 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      track_get_label, &tctx,
                                      "PLAY", "BACK");
                 GFX_flip(screen);
+                dirty = 0;
+            } else {
+                GFX_sync();
+            }
+
+        /* ==============================================================
+         * BROWSE_NET_ERROR
+         * ============================================================== */
+        } else if (state == BROWSE_NET_ERROR) {
+
+            if (PAD_justPressed(BTN_A)) {
+                /* Retry: reset the load guard for the failed state */
+                switch (net_error_from) {
+                    case BROWSE_LIBRARIES: libs_tried    = false; break;
+                    case BROWSE_ARTISTS:   artists_tried = false; break;
+                    case BROWSE_ALBUMS:    album_count   = 0;     break;
+                    case BROWSE_TRACKS:    track_count   = 0;     break;
+                    default: break;
+                }
+                state = net_error_from;
+                dirty = 1;
+            } else if (PAD_justPressed(BTN_B)) {
+                last_art_thumb[0] = '\0';
+                plex_art_clear();
+                switch (net_error_back) {
+                    case BROWSE_ARTISTS:
+                        if (artist_selected < artists_loaded &&
+                            artists[artist_selected].thumb[0]) {
+                            snprintf(last_art_thumb, sizeof(last_art_thumb),
+                                     "%s", artists[artist_selected].thumb);
+                            plex_art_fetch(cfg, artists[artist_selected].thumb);
+                        }
+                        break;
+                    case BROWSE_ALBUMS:
+                        if (album_selected < album_count &&
+                            albums[album_selected].thumb[0]) {
+                            snprintf(last_art_thumb, sizeof(last_art_thumb),
+                                     "%s", albums[album_selected].thumb);
+                            plex_art_fetch(cfg, albums[album_selected].thumb);
+                        }
+                        break;
+                    default:
+                        break;
+                }
+                state = net_error_back;
+                dirty = 1;
+            }
+
+            if (dirty) {
+                render_net_error(screen);
                 dirty = 0;
             } else {
                 GFX_sync();

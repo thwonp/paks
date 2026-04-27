@@ -94,7 +94,7 @@ static void plex_net_psa_init(void)
  * ------------------------------------------------------------------ */
 
 #define PLEX_NET_MAX_REDIRECTS  5
-#define PLEX_NET_DEFAULT_TIMEOUT 15
+#define PLEX_NET_DEFAULT_TIMEOUT 10
 #define PLEX_MAX_URL            2048
 
 #define PLEX_CLIENT_IDENTIFIER  "nextui-plex-music"
@@ -396,7 +396,12 @@ static int plex_net_download_file_internal(const char *url,
 int plex_net_fetch(const char *url, uint8_t *buffer, int buffer_size,
                    const PlexNetOptions *opts)
 {
-    return plex_net_fetch_internal(url, buffer, buffer_size, opts, 0);
+    int r = plex_net_fetch_internal(url, buffer, buffer_size, opts, 0);
+    if (r < 0) {
+        usleep(1000000);   /* 1 s pause — lets antenna reconnect */
+        r = plex_net_fetch_internal(url, buffer, buffer_size, opts, 0);
+    }
+    return r;
 }
 
 /* ------------------------------------------------------------------
@@ -1005,6 +1010,12 @@ int plex_net_download_file(const char *url, const char *filepath,
                            volatile bool *should_cancel,
                            const PlexNetOptions *opts)
 {
-    return plex_net_download_file_internal(url, filepath, progress_pct,
-                                           should_cancel, opts, 0);
+    int r = plex_net_download_file_internal(url, filepath, progress_pct,
+                                            should_cancel, opts, 0);
+    if (r < 0 && !(should_cancel && *should_cancel)) {
+        usleep(1000000);
+        r = plex_net_download_file_internal(url, filepath, progress_pct,
+                                            should_cancel, opts, 0);
+    }
+    return r;
 }
