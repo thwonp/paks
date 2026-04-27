@@ -17,7 +17,7 @@ void plex_log_init(void)
         snprintf(path, sizeof(path), "/tmp/plexmusic.txt");
     g_log = fopen(path, "w");
     if (g_log)
-        setvbuf(g_log, NULL, _IOFBF, PLEX_LOG_BUF_SIZE);
+        setvbuf(g_log, NULL, _IOLBF, 0);  /* line-buffered: each \n flushes, survives crashes */
 }
 
 void plex_log_write(int is_error, const char *fmt, ...)

@@ -798,6 +798,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                 }
                 state = BROWSE_ARTISTS;
                 dirty = 1;
+                GFX_sync();
+                continue;
             }
 
             /* Render */
@@ -989,12 +991,6 @@ AppModule module_browse_run(SDL_Surface *screen)
                     artists_page_loading = false;
                     /* old thread joined by the next browse_load_kick for BROWSE_LIBRARIES */
                 }
-                /* Back to libraries; reset lib state so it reloads */
-                lib_count       = 0;
-                lib_music_count = 0;
-                lib_selected    = 0;
-                lib_scroll      = 0;
-                libs_ls         = LOAD_IDLE;
                 last_art_thumb[0] = '\0';
                 plex_art_clear();
                 state = BROWSE_LIBRARIES;
@@ -1150,6 +1146,9 @@ AppModule module_browse_run(SDL_Surface *screen)
                 }
             } else if (PAD_justPressed(BTN_A) && album_count > 0) {
                 selected_album_rating_key = albums[album_selected].rating_key;
+                PLEX_LOG("[Browse] Album selected: id=%d title=%s offline=%d\n",
+                         selected_album_rating_key, albums[album_selected].title,
+                         cfg->offline_mode);
                 snprintf(selected_album_thumb, sizeof(selected_album_thumb),
                          "%s", albums[album_selected].thumb);
                 tracks_ls      = LOAD_IDLE;
@@ -1219,6 +1218,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                 if (cfg->offline_mode) {
                     track_count = plex_downloads_get_tracks_for_album(
                                       selected_album_rating_key, tracks, PLEX_MAX_ITEMS);
+                    PLEX_LOG("[Browse] Offline tracks for album %d: %d tracks\n",
+                             selected_album_rating_key, track_count);
                     tracks_ls = LOAD_READY;
                     /* Art is already loaded from album selection */
                     dirty = 1;

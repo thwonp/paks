@@ -483,6 +483,7 @@ AppModule module_player_run(SDL_Surface *screen)
     memset(&dl_ctx, 0, sizeof(dl_ctx));
     if (screen_state == PLAYER_SCREEN_DOWNLOADING) {
         if (is_local_file) {
+            PLEX_LOG("[Player] Loading offline file: %s\n", temp_path);
             Player_setFileGrowing(false);
             if (Player_load(temp_path) == 0) {
                 Player_play();

@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <pthread.h>
 #include <sys/stat.h>
 
@@ -162,10 +163,9 @@ static void url_encode(const char *src, char *dst, int dst_size)
 
 static void *fetch_thread_func(void *arg)
 {
-    (void)arg;
-
-    /* Capture generation at thread start, before any blocking work */
-    int my_generation = art_ctx.req_generation;
+    /* Generation is passed as the arg so we capture the value set by the
+       thread creator, not a potentially-overwritten req_generation field. */
+    int my_generation = (int)(intptr_t)arg;
 
     /* Take a local snapshot of the request parameters */
     char server_url[PLEX_MAX_URL];
@@ -380,7 +380,8 @@ void plex_art_fetch(const PlexConfig *cfg, const char *thumb_path)
 
     art_ctx.req_generation = art_ctx.generation;
 
-    if (pthread_create(&art_ctx.fetch_thread, NULL, fetch_thread_func, NULL) == 0) {
+    if (pthread_create(&art_ctx.fetch_thread, NULL, fetch_thread_func,
+                       (void *)(intptr_t)art_ctx.generation) == 0) {
         art_ctx.thread_active = true;
     } else {
         art_ctx.fetching = false;
