@@ -98,6 +98,7 @@ NEXTUI_PLATFORM_SRC = $(NEXTUI_PLATFORM)/platform.c
 # Main source files (explicit list to avoid picking up stub .c files for modules
 # we intentionally exclude, and to control link order)
 SOURCE = main.c \
+         plex_log.c \
          module_auth.c \
          module_browse.c \
          module_player.c \

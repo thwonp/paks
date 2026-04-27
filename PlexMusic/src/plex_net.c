@@ -20,7 +20,7 @@
 #include "mbedtls/ctr_drbg.h"
 #include "psa/crypto.h"
 
-#include "api.h"   /* LOG_error / LOG_info */
+#include "plex_log.h"
 
 /*
  * Resolve host:port, connect with timeout. Returns connected fd >= 0, or -1.
@@ -265,7 +265,7 @@ static PlexSSLCtx *ssl_ctx_connect(const char *host, int port, int timeout_sec)
     while ((ret = mbedtls_ssl_handshake(&ctx->ssl)) != 0) {
         if (ret == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) break;
         if (!SSL_RETRYABLE(ret) || ++retries > 100) {
-            LOG_error("[PlexNet] SSL handshake failed: -0x%04X host=%s\n", -ret, host);
+            PLEX_LOG_ERROR("[PlexNet] SSL handshake failed: -0x%04X host=%s\n", -ret, host);
             ssl_ctx_free(ctx);
             return NULL;
         }
@@ -410,7 +410,7 @@ static int plex_net_fetch_internal(const char *url,
 {
     if (!url || !buffer || buffer_size <= 0) return -1;
     if (redirect_depth >= PLEX_NET_MAX_REDIRECTS) {
-        LOG_error("[PlexNet] Too many redirects\n");
+        PLEX_LOG_ERROR("[PlexNet] Too many redirects\n");
         return -1;
     }
 
@@ -432,7 +432,7 @@ static int plex_net_fetch_internal(const char *url,
     if (parse_url(url, host, 256, &port, path, 1024, &is_https) != 0) {
         char safe_url[PLEX_MAX_URL];
         url_path_only(url, safe_url, sizeof(safe_url));
-        LOG_error("[PlexNet] Failed to parse URL: %s\n", safe_url);
+        PLEX_LOG_ERROR("[PlexNet] Failed to parse URL: %s\n", safe_url);
         free(host); free(path); return -1;
     }
 
@@ -442,7 +442,7 @@ static int plex_net_fetch_internal(const char *url,
     if (build_request(method_str, path, host, token, body, req, 4096) != 0) {
         char safe_url[PLEX_MAX_URL];
         url_path_only(url, safe_url, sizeof(safe_url));
-        LOG_error("[PlexNet] Request too large for URL: %s\n", safe_url);
+        PLEX_LOG_ERROR("[PlexNet] Request too large for URL: %s\n", safe_url);
         free(req); free(host); free(path); return -1;
     }
 
@@ -452,7 +452,7 @@ static int plex_net_fetch_internal(const char *url,
     if (is_https) {
         ssl_ctx = ssl_ctx_connect(host, port, timeout_sec);
         if (!ssl_ctx) {
-            LOG_error("[PlexNet] SSL connect failed: %s:%d\n", host, port);
+            PLEX_LOG_ERROR("[PlexNet] SSL connect failed: %s:%d\n", host, port);
             free(req); free(host); free(path); return -1;
         }
         sock_fd = ssl_ctx->net.fd;
@@ -461,7 +461,7 @@ static int plex_net_fetch_internal(const char *url,
         snprintf(port_str, sizeof(port_str), "%d", port);
         sock_fd = tcp_connect_timeout(host, port_str, timeout_sec);
         if (sock_fd < 0) {
-            LOG_error("[PlexNet] connect failed: %s:%d\n", host, port);
+            PLEX_LOG_ERROR("[PlexNet] connect failed: %s:%d\n", host, port);
             free(req); free(host); free(path); return -1;
         }
         struct timeval tv = { timeout_sec, 0 };
@@ -471,7 +471,7 @@ static int plex_net_fetch_internal(const char *url,
 
     /* Send request */
     if (net_send_all(ssl_ctx, sock_fd, req, (int)strlen(req)) < 0) {
-        LOG_error("[PlexNet] Failed to send request\n");
+        PLEX_LOG_ERROR("[PlexNet] Failed to send request\n");
         goto cleanup_fail;
     }
     free(req); req = NULL;
@@ -498,7 +498,7 @@ static int plex_net_fetch_internal(const char *url,
     hdr[hdr_pos] = '\0';
 
     if (!hdr_done) {
-        LOG_error("[PlexNet] Incomplete HTTP headers\n");
+        PLEX_LOG_ERROR("[PlexNet] Incomplete HTTP headers\n");
         free(hdr);
         goto cleanup_fail;
     }
@@ -534,7 +534,7 @@ static int plex_net_fetch_internal(const char *url,
             return plex_net_fetch_internal(redir_url, buffer, buffer_size,
                                            opts, redirect_depth + 1);
         }
-        LOG_error("[PlexNet] Redirect without Location header\n");
+        PLEX_LOG_ERROR("[PlexNet] Redirect without Location header\n");
         free(hdr);
         goto cleanup_fail;
     }
@@ -551,7 +551,7 @@ static int plex_net_fetch_internal(const char *url,
     if (http_status >= 400) {
         char safe_url[PLEX_MAX_URL];
         url_path_only(url, safe_url, sizeof(safe_url));
-        LOG_error("[PlexNet] HTTP %d for URL: %s\n", http_status, safe_url);
+        PLEX_LOG_ERROR("[PlexNet] HTTP %d for URL: %s\n", http_status, safe_url);
         free(hdr);
         goto cleanup_fail;
     }
@@ -696,7 +696,7 @@ static int plex_net_download_file_internal(const char *url,
 {
     if (!url || !filepath) return -1;
     if (redirect_depth >= PLEX_NET_MAX_REDIRECTS) {
-        LOG_error("[PlexNet] download: too many redirects\n");
+        PLEX_LOG_ERROR("[PlexNet] download: too many redirects\n");
         return -1;
     }
 
@@ -715,7 +715,7 @@ static int plex_net_download_file_internal(const char *url,
     if (parse_url(url, host, 256, &port, path, 1024, &is_https) != 0) {
         char safe_url[PLEX_MAX_URL];
         url_path_only(url, safe_url, sizeof(safe_url));
-        LOG_error("[PlexNet] download: failed to parse URL: %s\n", safe_url);
+        PLEX_LOG_ERROR("[PlexNet] download: failed to parse URL: %s\n", safe_url);
         free(host); free(path); return -1;
     }
 
@@ -743,7 +743,7 @@ static int plex_net_download_file_internal(const char *url,
         "\r\n",
         path, host, token_header);
     if (n < 0 || n >= 4096) {
-        LOG_error("[PlexNet] download: request too large\n");
+        PLEX_LOG_ERROR("[PlexNet] download: request too large\n");
         free(req); free(host); free(path); return -1;
     }
 
@@ -757,7 +757,7 @@ static int plex_net_download_file_internal(const char *url,
     if (is_https) {
         ssl_ctx = ssl_ctx_connect(host, port, timeout_sec);
         if (!ssl_ctx) {
-            LOG_error("[PlexNet] download: SSL connect failed: %s:%d\n", host, port);
+            PLEX_LOG_ERROR("[PlexNet] download: SSL connect failed: %s:%d\n", host, port);
             free(req); free(host); free(path); return -1;
         }
         sock_fd = ssl_ctx->net.fd;
@@ -766,7 +766,7 @@ static int plex_net_download_file_internal(const char *url,
         snprintf(port_str, sizeof(port_str), "%d", port);
         sock_fd = tcp_connect_timeout(host, port_str, timeout_sec);
         if (sock_fd < 0) {
-            LOG_error("[PlexNet] connect failed: %s:%d\n", host, port);
+            PLEX_LOG_ERROR("[PlexNet] connect failed: %s:%d\n", host, port);
             free(req); free(host); free(path); return -1;
         }
         struct timeval tv = { timeout_sec, 0 };
@@ -776,7 +776,7 @@ static int plex_net_download_file_internal(const char *url,
 
     /* Send request */
     if (net_send_all(ssl_ctx, sock_fd, req, (int)strlen(req)) < 0) {
-        LOG_error("[PlexNet] download: failed to send request\n");
+        PLEX_LOG_ERROR("[PlexNet] download: failed to send request\n");
         goto dl_cleanup;
     }
     free(req); req = NULL;
@@ -803,7 +803,7 @@ static int plex_net_download_file_internal(const char *url,
     hdr[hdr_pos] = '\0';
 
     if (!hdr_done) {
-        LOG_error("[PlexNet] download: incomplete headers\n");
+        PLEX_LOG_ERROR("[PlexNet] download: incomplete headers\n");
         goto dl_cleanup;
     }
 
@@ -840,7 +840,7 @@ static int plex_net_download_file_internal(const char *url,
                                                        progress_pct, should_cancel,
                                                        opts, redirect_depth + 1);
             }
-            LOG_error("[PlexNet] download: redirect without Location\n");
+            PLEX_LOG_ERROR("[PlexNet] download: redirect without Location\n");
             goto dl_cleanup;
         }
     }
@@ -856,7 +856,7 @@ static int plex_net_download_file_internal(const char *url,
         if (http_status >= 400) {
             char safe_url[PLEX_MAX_URL];
             url_path_only(url, safe_url, sizeof(safe_url));
-            LOG_error("[PlexNet] download: HTTP %d for: %s\n", http_status, safe_url);
+            PLEX_LOG_ERROR("[PlexNet] download: HTTP %d for: %s\n", http_status, safe_url);
             goto dl_cleanup;
         }
     }
@@ -888,7 +888,7 @@ static int plex_net_download_file_internal(const char *url,
     /* Open output file */
     outfile = fopen(filepath, "wb");
     if (!outfile) {
-        LOG_error("[PlexNet] download: failed to open file: %s\n", filepath);
+        PLEX_LOG_ERROR("[PlexNet] download: failed to open file: %s\n", filepath);
         goto dl_cleanup;
     }
 

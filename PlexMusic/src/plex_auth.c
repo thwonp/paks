@@ -7,7 +7,8 @@
 #include <string.h>
 
 #include "include/parson/parson.h"
-#include "api.h"   /* LOG_error / LOG_info */
+#include "api.h"
+#include "plex_log.h"
 
 #define PLEX_TV_API "https://plex.tv/api/v2"
 #define RESP_BUF_SIZE (32 * 1024)
@@ -35,7 +36,7 @@ int plex_auth_create_pin(PlexPin *pin)
 
     int n = plex_net_fetch(PLEX_TV_API "/pins", buf, RESP_BUF_SIZE, &opts);
     if (n <= 0) {
-        LOG_error("[PlexAuth] create_pin: fetch failed\n");
+        PLEX_LOG_ERROR("[PlexAuth] create_pin: fetch failed\n");
         free(buf);
         return -1;
     }
@@ -44,7 +45,7 @@ int plex_auth_create_pin(PlexPin *pin)
     JSON_Value  *root = json_parse_string((const char *)buf);
     free(buf);
     if (!root) {
-        LOG_error("[PlexAuth] create_pin: JSON parse failed\n");
+        PLEX_LOG_ERROR("[PlexAuth] create_pin: JSON parse failed\n");
         return -1;
     }
 
@@ -58,7 +59,7 @@ int plex_auth_create_pin(PlexPin *pin)
     const char *code  = json_object_get_string(obj, "code");
 
     if (id_d == 0.0 || !code || !*code) {
-        LOG_error("[PlexAuth] create_pin: missing id or code in response\n");
+        PLEX_LOG_ERROR("[PlexAuth] create_pin: missing id or code in response\n");
         json_value_free(root);
         return -1;
     }
@@ -95,7 +96,7 @@ int plex_auth_check_pin(PlexPin *pin)
 
     int n = plex_net_fetch(url, buf, RESP_BUF_SIZE, &opts);
     if (n <= 0) {
-        LOG_error("[PlexAuth] check_pin: fetch failed\n");
+        PLEX_LOG_ERROR("[PlexAuth] check_pin: fetch failed\n");
         free(buf);
         return -1;
     }
@@ -104,7 +105,7 @@ int plex_auth_check_pin(PlexPin *pin)
     JSON_Value  *root = json_parse_string((const char *)buf);
     free(buf);
     if (!root) {
-        LOG_error("[PlexAuth] check_pin: JSON parse failed\n");
+        PLEX_LOG_ERROR("[PlexAuth] check_pin: JSON parse failed\n");
         return -1;
     }
 
@@ -147,7 +148,7 @@ int plex_auth_get_servers(const char *token, PlexServer servers[], int *count)
     int n = plex_net_fetch(PLEX_TV_API "/resources?includeHttps=1",
                            buf, RESP_BUF_SIZE, &opts);
     if (n <= 0) {
-        LOG_error("[PlexAuth] get_servers: fetch failed\n");
+        PLEX_LOG_ERROR("[PlexAuth] get_servers: fetch failed\n");
         free(buf);
         return -1;
     }
@@ -156,7 +157,7 @@ int plex_auth_get_servers(const char *token, PlexServer servers[], int *count)
     JSON_Value *root = json_parse_string((const char *)buf);
     free(buf);
     if (!root) {
-        LOG_error("[PlexAuth] get_servers: JSON parse failed\n");
+        PLEX_LOG_ERROR("[PlexAuth] get_servers: JSON parse failed\n");
         return -1;
     }
 

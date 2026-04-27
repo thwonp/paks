@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "api.h"
+#include "plex_log.h"
 #include "defines.h"
 #include "module_auth.h"
 #include "module_common.h"
@@ -263,11 +264,11 @@ AppModule module_auth_run(SDL_Surface *screen)
                 /* Show loading screen before the blocking call */
                 render_loading_screen(screen);
 
-                LOG_info("[Auth] Fetching servers...\n");
+                PLEX_LOG("[Auth] Fetching servers...\n");
                 if (plex_auth_get_servers(pin.token, servers, &server_count) != 0) {
                     server_count = 0;
                 }
-                LOG_info("[Auth] server_count=%d\n", server_count);
+                PLEX_LOG("[Auth] server_count=%d\n", server_count);
 
                 if (server_count == 0) {
                     state = AUTH_STATE_ERROR;
@@ -279,7 +280,7 @@ AppModule module_auth_run(SDL_Surface *screen)
 
                 if (server_count == 1) {
                     /* Auto-select the only server */
-                    LOG_info("[Auth] Auto-selecting server: %s\n", servers[0].url);
+                    PLEX_LOG("[Auth] Auto-selecting server: %s\n", servers[0].url);
                     PlexConfig *cfg = plex_config_get_mutable();
                     strncpy(cfg->token, pin.token, PLEX_MAX_STR - 1);
                     cfg->token[PLEX_MAX_STR - 1] = '\0';
@@ -289,9 +290,9 @@ AppModule module_auth_run(SDL_Surface *screen)
                     cfg->server_name[PLEX_MAX_STR - 1] = '\0';
                     strncpy(cfg->server_id, servers[0].id, PLEX_MAX_STR - 1);
                     cfg->server_id[PLEX_MAX_STR - 1] = '\0';
-                    LOG_info("[Auth] Saving config...\n");
+                    PLEX_LOG("[Auth] Saving config...\n");
                     plex_config_save(cfg);
-                    LOG_info("[Auth] Returning MODULE_BROWSE\n");
+                    PLEX_LOG("[Auth] Returning MODULE_BROWSE\n");
                     return MODULE_BROWSE;
                 }
 

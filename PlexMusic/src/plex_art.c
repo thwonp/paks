@@ -11,7 +11,8 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 
-#include "api.h"      /* LOG_error */
+#include "api.h"
+#include "plex_log.h"
 
 /* ------------------------------------------------------------------
  * Module state
@@ -245,7 +246,7 @@ static void *fetch_thread_func(void *arg)
 
     if (art_ctx.should_stop || bytes <= 0) {
         if (bytes <= 0)
-            LOG_error("[PlexArt] fetch failed for thumb: %s\n", thumb_path);
+            PLEX_LOG_ERROR("[PlexArt] fetch failed for thumb: %s\n", thumb_path);
         free(img_buf);
         if (my_generation == art_ctx.generation)
             art_ctx.result_ready = true;
@@ -261,7 +262,7 @@ static void *fetch_thread_func(void *arg)
     if (rw) {
         surf = IMG_Load_RW(rw, 1);  /* freesrc=1 */
         if (!surf)
-            LOG_error("[PlexArt] IMG_Load_RW failed: %s\n", IMG_GetError());
+            PLEX_LOG_ERROR("[PlexArt] IMG_Load_RW failed: %s\n", IMG_GetError());
     }
 
     free(img_buf);

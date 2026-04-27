@@ -14,6 +14,7 @@
 #include <SDL2/SDL_ttf.h>
 
 #include "api.h"
+#include "plex_log.h"
 #include "background.h"
 #include "defines.h"
 #include "player.h"
@@ -329,7 +330,7 @@ AppModule module_player_run(SDL_Surface *screen)
     PlexQueue        *queue = plex_queue_get();
 
     if (!queue || !queue->active || queue->count == 0) {
-        LOG_error("[Player] module_player_run: no active queue\n");
+        PLEX_LOG_ERROR("[Player] module_player_run: no active queue\n");
         return MODULE_BROWSE;
     }
 
@@ -401,7 +402,7 @@ AppModule module_player_run(SDL_Surface *screen)
                     dirty            = 1;
                 } else {
                     remove(temp_path);
-                    LOG_error("[Player] Player_load failed: %s\n", temp_path);
+                    PLEX_LOG_ERROR("[Player] Player_load failed: %s\n", temp_path);
                     screen_state = PLAYER_SCREEN_ERROR;
                     dirty        = 1;
                 }

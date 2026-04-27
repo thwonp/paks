@@ -10,6 +10,7 @@
 #include "utils.h"
 #include "config.h"
 
+#include "plex_log.h"
 #include "plex_config.h"
 #include "plex_art.h"
 #include "player.h"
@@ -53,31 +54,33 @@ int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
 
-    fprintf(stderr, "[DIAG] main() entered\n");
+    plex_log_init();
+    PLEX_LOG("[DIAG] main() entered\n");
 
     /* --- Platform / SDL init (mirror musicplayer.c sequence) --- */
     SDL_Surface *screen = GFX_init(MODE_MAIN);
-    fprintf(stderr, "[DIAG] GFX_init done\n");
+    PLEX_LOG("[DIAG] GFX_init done\n");
     PWR_pinToCores(CPU_CORE_PERFORMANCE);
-    fprintf(stderr, "[DIAG] PWR_pinToCores done\n");
+    PLEX_LOG("[DIAG] PWR_pinToCores done\n");
 
     InitSettings();
-    fprintf(stderr, "[DIAG] InitSettings done\n");
+    PLEX_LOG("[DIAG] InitSettings done\n");
     PAD_init();
-    fprintf(stderr, "[DIAG] PAD_init done\n");
+    PLEX_LOG("[DIAG] PAD_init done\n");
     PWR_init();
-    fprintf(stderr, "[DIAG] PWR_init done\n");
+    PLEX_LOG("[DIAG] PWR_init done\n");
     WIFI_init();
-    fprintf(stderr, "[DIAG] WIFI_init done\n");
+    PLEX_LOG("[DIAG] WIFI_init done\n");
     Fonts_load();
-    fprintf(stderr, "[DIAG] Fonts_load done\n");
+    PLEX_LOG("[DIAG] Fonts_load done\n");
     plex_art_init();
-    fprintf(stderr, "[DIAG] plex_art_init done\n");
+    PLEX_LOG("[DIAG] plex_art_init done\n");
     if (Player_init() != 0) {
-        LOG_error("[Main] Player_init failed\n");
+        PLEX_LOG_ERROR("[Main] Player_init failed\n");
+        plex_log_flush();
         return EXIT_FAILURE;
     }
-    fprintf(stderr, "[DIAG] Player_init done\n");
+    PLEX_LOG("[DIAG] Player_init done\n");
 
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
@@ -88,11 +91,11 @@ int main(int argc, char *argv[]) {
      */
     memset(&g_config, 0, sizeof(g_config));
     if (plex_config_load(&g_config) == 0) {
-        LOG_info("Config loaded: server=%s\n", g_config.server_url);
+        PLEX_LOG("Config loaded: server=%s\n", g_config.server_url);
     } else {
-        LOG_info("No config found — starting at auth screen\n");
+        PLEX_LOG("No config found — starting at auth screen\n");
     }
-    fprintf(stderr, "[DIAG] plex_config_load done\n");
+    PLEX_LOG("[DIAG] plex_config_load done\n");
 
     /*
      * Determine starting module.
@@ -101,7 +104,7 @@ int main(int argc, char *argv[]) {
      */
     bool has_token = plex_config_is_valid(&g_config);
     AppModule current = has_token ? MODULE_BROWSE : MODULE_AUTH;
-    fprintf(stderr, "[DIAG] plex_config_is_valid done, module=%d\n", current);
+    PLEX_LOG("[DIAG] plex_config_is_valid done, module=%d\n", current);
 
     /* --- Main module loop --- */
     while (!g_quit) {
@@ -142,5 +145,6 @@ int main(int argc, char *argv[]) {
     PAD_quit();
     GFX_quit();
 
+    plex_log_flush();
     return EXIT_SUCCESS;
 }

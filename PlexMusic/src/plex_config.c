@@ -10,7 +10,8 @@
 #include <errno.h>
 
 #include "include/parson/parson.h"
-#include "api.h"   /* LOG_error / LOG_info */
+#include "api.h"
+#include "plex_log.h"
 
 #define PLEX_CONFIG_FALLBACK_DIR "/mnt/SDCARD/.userdata/shared/plexmusic"
 #define PLEX_CONFIG_FILENAME     "config.json"
@@ -65,7 +66,7 @@ int plex_config_load(PlexConfig *cfg)
 
     JSON_Value *root = json_parse_file(path);
     if (!root) {
-        LOG_error("[PlexConfig] Could not parse: %s\n", path);
+        PLEX_LOG_ERROR("[PlexConfig] Could not parse: %s\n", path);
         return -1;
     }
 
@@ -126,7 +127,7 @@ int plex_config_save(const PlexConfig *cfg)
     json_free_serialized_string(json_str);
 
     if (written != (ssize_t)len || sync_err != 0) {
-        LOG_error("[PlexConfig] Failed to write or fsync: %s\n", path);
+        PLEX_LOG_ERROR("[PlexConfig] Failed to write or fsync: %s\n", path);
         return -1;
     }
     return 0;

@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "api.h"
+#include "plex_log.h"
 #include "background.h"
 #include "defines.h"
 #include "module_browse.h"
@@ -281,7 +282,7 @@ void module_browse_reset(void)
 
 AppModule module_browse_run(SDL_Surface *screen)
 {
-    fprintf(stderr, "[DIAG] module_browse_run entered\n");
+    PLEX_LOG("[DIAG] module_browse_run entered\n");
     /* ------------------------------------------------------------------ */
     /* Static state — persists between re-entries from the player module  */
     /* ------------------------------------------------------------------ */
@@ -333,7 +334,7 @@ AppModule module_browse_run(SDL_Surface *screen)
     int show_setting = 0;
 
     const PlexConfig *cfg = plex_config_get_mutable();
-    fprintf(stderr, "[DIAG] cfg obtained: server=%s\n", cfg ? cfg->server_url : "(null)");
+    PLEX_LOG("[DIAG] cfg obtained: server=%s\n", cfg ? cfg->server_url : "(null)");
 
     /* ------------------------------------------------------------------ */
     /* First-time initialisation                                           */
@@ -364,15 +365,11 @@ AppModule module_browse_run(SDL_Surface *screen)
     /* Main event loop                                                     */
     /* ------------------------------------------------------------------ */
     while (1) {
-        fprintf(stderr, "[DIAG] loop top\n");
         GFX_startFrame();
-        fprintf(stderr, "[DIAG] GFX_startFrame done\n");
         PAD_poll();
-        fprintf(stderr, "[DIAG] PAD_poll done\n");
 
         /* Global input (Start long-press → quit dialog, volume, etc.) */
         GlobalInputResult global = ModuleCommon_handleGlobalInput(screen, &show_setting, 0);
-        fprintf(stderr, "[DIAG] handleGlobalInput done\n");
         if (global.should_quit) {
             return MODULE_QUIT;
         }
@@ -390,12 +387,12 @@ AppModule module_browse_run(SDL_Surface *screen)
             /* Load on first entry — one-shot via libs_tried flag */
             if (!libs_tried) {
                 libs_tried = true;
-                LOG_info("[Browse] Loading libraries from: %s\n", cfg->server_url);
+                PLEX_LOG("[Browse] Loading libraries from: %s\n", cfg->server_url);
                 render_loading(screen);
                 memset(libs, 0, sizeof(libs));
                 int raw_count = 0;
                 plex_api_get_libraries(cfg, libs, &raw_count);
-                LOG_info("[Browse] Got %d libraries (raw)\n", raw_count);
+                PLEX_LOG("[Browse] Got %d libraries (raw)\n", raw_count);
                 lib_music_count = 0;
                 for (int i = 0; i < raw_count; i++) {
                     if (strcmp(libs[i].type, "artist") == 0) {
@@ -404,7 +401,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 }
                 lib_count = raw_count;
 
-                LOG_info("[Browse] Music library count: %d\n", lib_music_count);
+                PLEX_LOG("[Browse] Music library count: %d\n", lib_music_count);
 
                 /* Auto-select if only one music library */
                 if (lib_music_count == 1) {
@@ -480,7 +477,6 @@ AppModule module_browse_run(SDL_Surface *screen)
 
             /* Render */
             if (dirty) {
-                LOG_info("[Browse] Rendering library list (total_items=%d, selected=%d)\n", lib_total_items, lib_selected);
                 LibLabelCtx lctx;
                 /* Build a filtered list of music-library names */
                 PlexLibrary music_libs[16];
@@ -517,7 +513,7 @@ AppModule module_browse_run(SDL_Surface *screen)
             /* Load on first entry */
             if (!artists_tried) {
                 artists_tried = true;
-                LOG_info("[Browse] Loading artists for library_id=%d\n", selected_library_id);
+                PLEX_LOG("[Browse] Loading artists for library_id=%d\n", selected_library_id);
                 render_loading(screen);
                 PlexPage page;
                 memset(&page, 0, sizeof(page));
@@ -538,7 +534,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 }
                 artists_loaded = page.count;
                 artists_total  = page.total;
-                LOG_info("[Browse] Got %d / %d artists\n", artists_loaded, artists_total);
+                PLEX_LOG("[Browse] Got %d / %d artists\n", artists_loaded, artists_total);
                 dirty = 1;
 
                 /* Trigger art fetch for initial selection */

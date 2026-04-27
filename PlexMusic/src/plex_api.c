@@ -7,7 +7,8 @@
 #include <string.h>
 
 #include "include/parson/parson.h"
-#include "api.h"   /* LOG_error / LOG_info */
+#include "api.h"
+#include "plex_log.h"
 
 /* Page size for paginated artist fetch */
 #define ARTIST_PAGE_SIZE 50
@@ -29,7 +30,7 @@ static JSON_Value *server_get(const PlexConfig *cfg, const char *path_and_query)
     int url_len = snprintf(url, sizeof(url), "%s%s%sX-Plex-Token=%s",
                            cfg->server_url, path_and_query, sep, cfg->token);
     if (url_len < 0 || url_len >= (int)sizeof(url)) {
-        LOG_error("[PlexAPI] URL too long for path: %s\n", path_and_query);
+        PLEX_LOG_ERROR("[PlexAPI] URL too long for path: %s\n", path_and_query);
         return NULL;
     }
 
@@ -46,7 +47,7 @@ static JSON_Value *server_get(const PlexConfig *cfg, const char *path_and_query)
     int n = plex_net_fetch(url, buf, RESP_BUF_SIZE, &opts);
     if (n <= 0) {
         /* Log path only — the full URL contains the auth token */
-        LOG_error("[PlexAPI] fetch failed for path: %s\n", path_and_query);
+        PLEX_LOG_ERROR("[PlexAPI] fetch failed for path: %s\n", path_and_query);
         free(buf);
         return NULL;
     }
@@ -56,7 +57,7 @@ static JSON_Value *server_get(const PlexConfig *cfg, const char *path_and_query)
     free(buf);
     if (!root) {
         /* Log path only — the full URL contains the auth token */
-        LOG_error("[PlexAPI] JSON parse failed for path: %s\n", path_and_query);
+        PLEX_LOG_ERROR("[PlexAPI] JSON parse failed for path: %s\n", path_and_query);
     }
     return root;
 }
