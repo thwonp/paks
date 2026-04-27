@@ -71,6 +71,7 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           PRERELEASE_FLAG=""
           [ "${{ github.event.inputs.prerelease }}" = "true" ] && PRERELEASE_FLAG="--prerelease"
