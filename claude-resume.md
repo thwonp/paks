@@ -1,6 +1,6 @@
 # PlexMusic.pak — Session Resume Document
 
-Last updated: 2026-04-27 (session 2)
+Last updated: 2026-04-28 (session 3)
 
 ---
 
@@ -126,8 +126,8 @@ Contains: `{ "token": "...", "server_url": "...", "server_name": "...", "server_
 - App launches without crashing
 - PIN auth screen displays a 4-character PIN with 120s countdown
 - Successful auth transitions to server selection; config saved to SD card
-- Browse flow: Home menu → Artists → Albums → Tracks
-- Home screen: static menu [Artists / Now Playing (conditional) / Settings]
+- Browse flow: Home menu → Artists → Albums → Tracks, and Home menu → Albums (flat all-albums view) → Tracks
+- Home screen: static menu [Artists / Albums / Now Playing (conditional) / Settings]
 - First launch: library picker shown; auto-selects if only one music library; saves to config
 - Library selection persisted to config.json; accessible via Settings → Library
 - Now Playing screen — layout correct on Brick (1024×768)
@@ -142,11 +142,13 @@ Contains: `{ "token": "...", "server_url": "...", "server_name": "...", "server_
 - Screen auto-sleep: configurable timeout (Off/15s/30s/1min/2min/5min) in Settings; MENU+SELECT wakes
 - Screen timeout setting persisted to config.json
 - Startup splash rendered before relay URL probe (no more black screen on launch)
-- Right sidebar (art panel) shown only on Albums screen; all other browse screens full-width
+- Right sidebar (art panel) shown on Albums and All-Albums screens; all other browse screens full-width
 - Artist thumbnail fetches suppressed (artist art has no consumer without the sidebar)
+- All-Albums view: flat paginated list of all library albums sorted by release year descending; uses same `album_get_label` ("Title (YEAR)") as artist Albums view
+- Offline mode: home menu now always shown (online and offline); SELECT toggles between modes from home screen; header shows "Music (Online)" / "Music (Offline)"; B from offline Artists/Albums returns to home menu (no longer triggers quit)
 
 ### Active bugs / under investigation
-- **Offline album click crash** — app crashes when selecting an album in offline mode. Root cause unknown; diagnostic logging added. Next reproduction will capture the crash site.
+- **Offline album click crash** — app crashes when selecting an album in offline mode (Artists → Albums path). Root cause unknown; diagnostic logging added. Next reproduction will capture the crash site.
 
 ### Deferred / known noise
 - Remove `[DIAG] fprintf` logging from `main.c` and `module_browse.c` (deferred by user)
@@ -193,13 +195,17 @@ Contains: `{ "token": "...", "server_url": "...", "server_name": "...", "server_
 - **`BROWSE_LIBRARIES`** is now a static home menu — it does NOT fetch libraries. Do not add async load logic there.
 - **`BROWSE_LIBRARY_PICKER`** contains the async library fetch. It is entered on first launch (`cfg->library_id == 0`) or when `module_browse_request_library_pick()` has been called (e.g. from Settings).
 - **`s_library_pick_requested` flag** must be checked OUTSIDE the `!s_browse_initialized` block so it fires on every call to `module_browse_run()`, not just the first.
-- **Sidebar**: right art panel only renders for `BROWSE_ALBUMS`. All other states pass `show_panel=0` to `render_browse_screen`. Artist thumbnail fetches (`plex_art_fetch` with `artists[...].thumb`) are fully removed.
+- **Sidebar**: right art panel renders for `BROWSE_ALBUMS` and `BROWSE_ALL_ALBUMS` (`show_panel=1`). All other states pass `show_panel=0`. Artist thumbnail fetches are fully removed.
 - **Startup black screen**: `SDL_FillRect` + `GFX_flip` is called before each `apply_relay_fallback()` in `main.c` so the screen is dark (not black/unrendered) during the blocking DNS probe.
+- **Offline mode home menu**: the offline early-return from `BROWSE_LIBRARIES` was removed — the home menu now renders in both modes. SELECT toggles online/offline from the home menu. The header shows "Music (Online)" / "Music (Offline)".
+- **B from `BROWSE_ARTISTS` or `BROWSE_ALL_ALBUMS`** always returns to `BROWSE_LIBRARIES` (home menu), regardless of online/offline mode. The old offline-specific quit-confirm on B-from-Artists is gone.
 
 ### Browse async workers (`module_browse.c`)
 - **Single shared worker context `s_load`**: Only one load in flight at a time.
 - **Soft cancel**: `s_load.cancel = true`; old thread joined on next `browse_load_kick()`.
 - **B-cancel for BROWSE_ARTISTS**: Does NOT reset `libs_ls` — library data stays valid to avoid triggering a re-kick on the next frame.
+- **`BROWSE_ALL_ALBUMS` / `BROWSE_ALL_ALBUMS_PAGE`**: paginated all-library album fetch. Uses `s_load.all_albums_page` (PlexPage) and `s_load.all_albums_offset`. Mirrors the BROWSE_ARTISTS / BROWSE_ARTISTS_PAGE pattern exactly.
+- **`tracks_back_state`**: static variable set to `BROWSE_ALBUMS` or `BROWSE_ALL_ALBUMS` at the A-press transition site. All B-presses and error-back paths in `BROWSE_TRACKS` use this instead of a hardcoded `BROWSE_ALBUMS`.
 
 ### Scrobble fire-and-forget (`module_player.c`)
 - **`fire_scrobble()` helper**: Heap-allocates ctx, spawns detached pthread. Five call sites: periodic (every 5s), 90% mark, quit, prev, next.
@@ -222,14 +228,18 @@ module_auth_run()
   → return MODULE_BROWSE
 
 module_browse_run()            static state, persists across player round-trips
-  → BROWSE_LIBRARIES           static home menu [Artists / Now Playing / Settings]
+  → BROWSE_LIBRARIES           static home menu [Artists / Albums / Now Playing / Settings]
+                               header: "Music (Online)" / "Music (Offline)"
+                               SELECT toggles online/offline mode
   → BROWSE_LIBRARY_PICKER      async library fetch; shown on first launch or via Settings
                                auto-selects + saves if only one music library
   → BROWSE_ARTISTS / BROWSE_ALBUMS / BROWSE_TRACKS
+  → BROWSE_ALL_ALBUMS          flat all-library album list, sorted year:desc, paginated
   → browse_load_worker()       background pthread for all data loads
   → main loop polls LoadState each frame; renders animated loading screen
   → B at home = quit confirmation dialog (A confirms, B cancels)
   → MENU+START = immediate quit (handled in ModuleCommon_handleGlobalInput)
+  → tracks_back_state          routes B-from-tracks to BROWSE_ALBUMS or BROWSE_ALL_ALBUMS
   → plex_queue_set()           load tracks into queue
   → return MODULE_PLAYER
 
@@ -251,6 +261,11 @@ plex_net.c                     HTTP/HTTPS client
 
 plex_art.c                     async cover art
   → disk cache at $SHARED_USERDATA_PATH/plexmusic/art/
+
+plex_api_get_all_albums()      GET /library/sections/{id}/all?type=9&sort=year:desc
+                               paginated (same ARTIST_PAGE_SIZE), fills PlexPage
+plex_downloads_get_all_albums() aggregate all ManifestAlbums, qsort by year desc
+ManifestAlbum / QueueEntry     both carry char year[8]; year persisted in manifest JSON
 ```
 
 ---
