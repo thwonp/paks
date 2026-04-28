@@ -812,19 +812,29 @@ AppModule module_browse_run(SDL_Surface *screen)
             } else if (PAD_justPressed(BTN_B)) {
                 quit_confirm_active = true;
                 dirty = 1;
-            } else if (PAD_justPressed(BTN_SELECT) && !cfg->offline_mode) {
-                /* Cancel any running load */
-                if (s_load.thread_started) {
-                    s_load.cancel = true;
-                    pthread_join(s_load.thread, NULL);
-                    s_load.thread_started = false;
-                    pthread_mutex_lock(&s_load.lock);
-                    s_load.status = LOAD_IDLE;
-                    pthread_mutex_unlock(&s_load.lock);
+            } else if (PAD_justPressed(BTN_SELECT)) {
+                if (!cfg->offline_mode) {
+                    /* Cancel any running load */
+                    if (s_load.thread_started) {
+                        s_load.cancel = true;
+                        pthread_join(s_load.thread, NULL);
+                        s_load.thread_started = false;
+                        pthread_mutex_lock(&s_load.lock);
+                        s_load.status = LOAD_IDLE;
+                        pthread_mutex_unlock(&s_load.lock);
+                    }
+                    /* Switch to offline — home menu stays; user picks Artists or Albums */
+                    mutable_cfg->offline_mode = true;
+                    plex_config_save(mutable_cfg);
+                    artists_ls     = LOAD_IDLE;
+                    all_albums_ls  = LOAD_IDLE;
+                } else {
+                    /* Switch back to online */
+                    mutable_cfg->offline_mode = false;
+                    plex_config_save(mutable_cfg);
+                    artists_ls     = LOAD_IDLE;
+                    all_albums_ls  = LOAD_IDLE;
                 }
-                /* Switch to offline — home menu stays; user picks Artists or Albums */
-                mutable_cfg->offline_mode = true;
-                plex_config_save(mutable_cfg);
                 dirty = 1;
             }
 
@@ -841,9 +851,11 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      NULL, NULL, NULL,
                                      home_get_label, &hctx,
                                      "SELECT", "QUIT", 0);
-                /* Extra hint for offline mode toggle — only in online mode */
+                /* Extra hint for offline mode toggle */
                 if (!cfg->offline_mode)
                     GFX_blitButtonGroup((char*[]){"SELECT", "OFFLINE", NULL}, 0, screen, 0);
+                else
+                    GFX_blitButtonGroup((char*[]){"SELECT", "ONLINE", NULL}, 0, screen, 0);
                 if (quit_confirm_active) {
                     render_quit_confirm_dialog(screen);
                 }
@@ -1006,6 +1018,14 @@ AppModule module_browse_run(SDL_Surface *screen)
 
             /* Kick on first entry */
             if (artists_ls == LOAD_IDLE) {
+                if (cfg->offline_mode) {
+                    artists_loaded = plex_downloads_get_artists(artists, PLEX_MAX_ITEMS);
+                    artists_total  = artists_loaded;
+                    artists_ls     = LOAD_READY;
+                    dirty = 1;
+                    GFX_sync();
+                    continue;
+                }
                 PLEX_LOG("[Browse] Loading artists for library_id=%d\n", selected_library_id);
                 browse_load_kick(BROWSE_ARTISTS, cfg,
                                  selected_library_id, 0, 0,
