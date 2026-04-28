@@ -26,6 +26,10 @@ void plex_queue_set(const PlexConfig *cfg,
 
     if (g_queue.tracks[g_queue.current_index].local_path[0] != '\0')
         g_queue.stream_url[0] = '\0';
+    else if (cfg->stream_bitrate_kbps > 0)
+        plex_api_get_transcode_url(cfg, &g_queue.tracks[g_queue.current_index],
+                                   cfg->stream_bitrate_kbps,
+                                   g_queue.stream_url, sizeof(g_queue.stream_url));
     else
         plex_api_get_stream_url(cfg, &g_queue.tracks[g_queue.current_index],
                                 g_queue.stream_url, sizeof(g_queue.stream_url));
@@ -39,6 +43,10 @@ bool plex_queue_next(const PlexConfig *cfg)
     g_queue.current_index++;
     if (g_queue.tracks[g_queue.current_index].local_path[0] != '\0')
         g_queue.stream_url[0] = '\0';
+    else if (cfg->stream_bitrate_kbps > 0)
+        plex_api_get_transcode_url(cfg, &g_queue.tracks[g_queue.current_index],
+                                   cfg->stream_bitrate_kbps,
+                                   g_queue.stream_url, sizeof(g_queue.stream_url));
     else
         plex_api_get_stream_url(cfg, &g_queue.tracks[g_queue.current_index],
                                 g_queue.stream_url, sizeof(g_queue.stream_url));
@@ -53,6 +61,10 @@ bool plex_queue_prev(const PlexConfig *cfg)
     g_queue.current_index--;
     if (g_queue.tracks[g_queue.current_index].local_path[0] != '\0')
         g_queue.stream_url[0] = '\0';
+    else if (cfg->stream_bitrate_kbps > 0)
+        plex_api_get_transcode_url(cfg, &g_queue.tracks[g_queue.current_index],
+                                   cfg->stream_bitrate_kbps,
+                                   g_queue.stream_url, sizeof(g_queue.stream_url));
     else
         plex_api_get_stream_url(cfg, &g_queue.tracks[g_queue.current_index],
                                 g_queue.stream_url, sizeof(g_queue.stream_url));

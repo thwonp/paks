@@ -2338,6 +2338,13 @@ void Player_setFileGrowing(bool growing) {
     player.file_growing = growing;
 }
 
+void Player_setTotalFrames(int64_t frames)
+{
+    pthread_mutex_lock(&player.mutex);
+    player.stream_decoder.total_frames = frames;
+    pthread_mutex_unlock(&player.mutex);
+}
+
 void Player_togglePause(void) {
     pthread_mutex_lock(&player.mutex);
     if (player.state == PLAYER_STATE_PLAYING) {

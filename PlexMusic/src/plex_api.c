@@ -386,6 +386,21 @@ void plex_api_get_stream_url(const PlexConfig *cfg, const PlexTrack *track,
 }
 
 /* ------------------------------------------------------------------
+ * plex_api_get_transcode_url
+ * Produces: {server_url}{media_key}?X-Plex-Token={token}
+ *           &audioCodec=opus&audioBitrate={kbps}
+ * bitrate_kbps must be > 0.
+ * ------------------------------------------------------------------ */
+void plex_api_get_transcode_url(const PlexConfig *cfg, const PlexTrack *track,
+                                int bitrate_kbps, char *out_url, int out_url_size)
+{
+    if (!cfg || !track || !out_url || out_url_size <= 0) return;
+    snprintf(out_url, out_url_size,
+             "%s%s?X-Plex-Token=%s&audioCodec=opus&audioBitrate=%d",
+             cfg->server_url, track->media_key, cfg->token, bitrate_kbps);
+}
+
+/* ------------------------------------------------------------------
  * plex_api_timeline
  * GET {server_url}/:/timeline?ratingKey=...&state=...&time=...
  *     &duration=...&identifier=com.plexapp.plugins.library

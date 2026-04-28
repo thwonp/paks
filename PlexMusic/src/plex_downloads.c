@@ -415,6 +415,10 @@ static void *download_worker(void *arg)
 
         int limit = track_count < MANIFEST_TRACKS_MAX ? track_count : MANIFEST_TRACKS_MAX;
 
+        /* Read download bitrate once per album (int read is atomic enough; value only
+         * changes when the user saves settings on the main thread). */
+        int dl_bitrate = plex_config_get_mutable()->download_bitrate_kbps;
+
         for (int i = 0; i < limit; i++) {
             /* Check stop flag between tracks */
             pthread_mutex_lock(&g_mutex);
@@ -425,7 +429,12 @@ static void *download_worker(void *arg)
             const PlexTrack *t = &tracks[i];
 
             char ext[16];
-            extract_ext(t->media_key, ext, sizeof(ext));
+            if (dl_bitrate > 0) {
+                strncpy(ext, "opus", sizeof(ext) - 1);
+                ext[sizeof(ext) - 1] = '\0';
+            } else {
+                extract_ext(t->media_key, ext, sizeof(ext));
+            }
 
             char local_path[768];
             track_local_path(entry.album_rating_key, t->rating_key,
@@ -434,7 +443,10 @@ static void *download_worker(void *arg)
             ensure_parent_dirs(local_path);
 
             char stream_url[PLEX_MAX_URL];
-            plex_api_get_stream_url(&cfg, t, stream_url, sizeof(stream_url));
+            if (dl_bitrate > 0)
+                plex_api_get_transcode_url(&cfg, t, dl_bitrate, stream_url, sizeof(stream_url));
+            else
+                plex_api_get_stream_url(&cfg, t, stream_url, sizeof(stream_url));
 
             PlexNetOptions opts;
             memset(&opts, 0, sizeof(opts));

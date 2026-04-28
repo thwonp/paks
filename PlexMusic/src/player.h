@@ -190,6 +190,11 @@ void Player_update(void);
 // Signal whether the underlying file is still being downloaded (progressive playback)
 void Player_setFileGrowing(bool growing);
 
+/* Override the stream decoder's total_frames (used when duration is known from metadata).
+ * Call after Player_load when the format's built-in total_frames is unreliable (e.g. Opus on
+ * a partial file). Thread-safe. */
+void Player_setTotalFrames(int64_t frames);
+
 // Resume/pause audio device (used by radio module)
 void Player_resumeAudio(void);
 void Player_pauseAudio(void);

@@ -26,11 +26,13 @@ typedef enum {
 } SettingsState;
 
 /* Menu item indices (items 0 and 1 are header lines — non-selectable) */
-#define SETTINGS_ITEM_SWITCH_SERVER  0
-#define SETTINGS_ITEM_SIGN_OUT       1
-#define SETTINGS_ITEM_SCREEN_TIMEOUT 2
-#define SETTINGS_ITEM_LIBRARY        3
-#define SETTINGS_ITEM_COUNT          4
+#define SETTINGS_ITEM_SWITCH_SERVER    0
+#define SETTINGS_ITEM_SIGN_OUT         1
+#define SETTINGS_ITEM_SCREEN_TIMEOUT   2
+#define SETTINGS_ITEM_LIBRARY          3
+#define SETTINGS_ITEM_STREAM_BITRATE   4
+#define SETTINGS_ITEM_DOWNLOAD_BITRATE 5
+#define SETTINGS_ITEM_COUNT            6
 
 /* Milliseconds to show "Server updated." confirmation */
 #define SERVER_UPDATED_PAUSE_MS 1500
@@ -61,6 +63,25 @@ static int screen_timeout_index(int seconds)
         if (SCREEN_TIMEOUT_VALUES[i] == seconds)
             return i;
     }
+    return 0;
+}
+
+/* Bitrate cycle: 0 = Original; 96/128/192/256/320 kbps = transcode to Opus */
+static const int BITRATE_VALUES[] = { 0, 96, 128, 192, 256, 320 };
+static const int BITRATE_COUNT    = 6;
+
+static const char *bitrate_label(int kbps)
+{
+    if (kbps == 0) return "Original";
+    static char buf[16];
+    snprintf(buf, sizeof(buf), "%d kbps", kbps);
+    return buf;
+}
+
+static int bitrate_index(int kbps)
+{
+    for (int i = 0; i < BITRATE_COUNT; i++)
+        if (BITRATE_VALUES[i] == kbps) return i;
     return 0;
 }
 
@@ -131,11 +152,21 @@ static void render_settings_menu(SDL_Surface *screen, int show_setting,
     else
         snprintf(library_label, sizeof(library_label), "Library: (not set)");
 
+    char stream_bitrate_label[32];
+    snprintf(stream_bitrate_label, sizeof(stream_bitrate_label),
+             "Streaming Quality: %s", bitrate_label(cfg->stream_bitrate_kbps));
+
+    char download_bitrate_label[32];
+    snprintf(download_bitrate_label, sizeof(download_bitrate_label),
+             "Download Quality: %s", bitrate_label(cfg->download_bitrate_kbps));
+
     const char *labels[SETTINGS_ITEM_COUNT] = {
         "Switch Server",
         "Sign Out",
         timeout_label,
         library_label,
+        stream_bitrate_label,
+        download_bitrate_label,
     };
 
     /* Adjust list_y for menu items so they appear below the header block */
@@ -336,6 +367,20 @@ AppModule module_settings_run(SDL_Surface *screen)
                 } else if (menu_selected == SETTINGS_ITEM_LIBRARY) {
                     module_browse_request_library_pick();
                     return MODULE_BROWSE;
+                } else if (menu_selected == SETTINGS_ITEM_STREAM_BITRATE) {
+                    PlexConfig *cfg = plex_config_get_mutable();
+                    int idx = bitrate_index(cfg->stream_bitrate_kbps);
+                    idx = (idx + 1) % BITRATE_COUNT;
+                    cfg->stream_bitrate_kbps = BITRATE_VALUES[idx];
+                    plex_config_save(cfg);
+                    dirty = 1;
+                } else if (menu_selected == SETTINGS_ITEM_DOWNLOAD_BITRATE) {
+                    PlexConfig *cfg = plex_config_get_mutable();
+                    int idx = bitrate_index(cfg->download_bitrate_kbps);
+                    idx = (idx + 1) % BITRATE_COUNT;
+                    cfg->download_bitrate_kbps = BITRATE_VALUES[idx];
+                    plex_config_save(cfg);
+                    dirty = 1;
                 }
             } else if (PAD_justPressed(BTN_LEFT)) {
                 if (menu_selected == SETTINGS_ITEM_SCREEN_TIMEOUT) {
@@ -343,6 +388,20 @@ AppModule module_settings_run(SDL_Surface *screen)
                     int idx = screen_timeout_index(cfg->screen_timeout);
                     idx = (idx - 1 + SCREEN_TIMEOUT_COUNT) % SCREEN_TIMEOUT_COUNT;
                     cfg->screen_timeout = SCREEN_TIMEOUT_VALUES[idx];
+                    plex_config_save(cfg);
+                    dirty = 1;
+                } else if (menu_selected == SETTINGS_ITEM_STREAM_BITRATE) {
+                    PlexConfig *cfg = plex_config_get_mutable();
+                    int idx = bitrate_index(cfg->stream_bitrate_kbps);
+                    idx = (idx - 1 + BITRATE_COUNT) % BITRATE_COUNT;
+                    cfg->stream_bitrate_kbps = BITRATE_VALUES[idx];
+                    plex_config_save(cfg);
+                    dirty = 1;
+                } else if (menu_selected == SETTINGS_ITEM_DOWNLOAD_BITRATE) {
+                    PlexConfig *cfg = plex_config_get_mutable();
+                    int idx = bitrate_index(cfg->download_bitrate_kbps);
+                    idx = (idx - 1 + BITRATE_COUNT) % BITRATE_COUNT;
+                    cfg->download_bitrate_kbps = BITRATE_VALUES[idx];
                     plex_config_save(cfg);
                     dirty = 1;
                 }

@@ -105,6 +105,9 @@ int plex_config_load(PlexConfig *cfg)
     if (library_name)
         strncpy(cfg->library_name, library_name, sizeof(cfg->library_name) - 1);
 
+    cfg->stream_bitrate_kbps   = (int)json_object_get_number(obj, "stream_bitrate_kbps");
+    cfg->download_bitrate_kbps = (int)json_object_get_number(obj, "download_bitrate_kbps");
+
     json_value_free(root);
     return 0;
 }
@@ -129,6 +132,8 @@ int plex_config_save(const PlexConfig *cfg)
     json_object_set_number(obj, "screen_timeout", cfg->screen_timeout);
     json_object_set_number(obj, "library_id",     cfg->library_id);
     json_object_set_string(obj, "library_name",   cfg->library_name);
+    json_object_set_number(obj, "stream_bitrate_kbps",   cfg->stream_bitrate_kbps);
+    json_object_set_number(obj, "download_bitrate_kbps", cfg->download_bitrate_kbps);
 
     char *json_str = json_serialize_to_string_pretty(root);
     json_value_free(root);

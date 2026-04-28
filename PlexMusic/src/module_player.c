@@ -401,7 +401,8 @@ static void load_next_track(PlexQueue *queue, bool *is_local_file,
                              DownloadCtx *dl_ctx, pthread_t *dl_thread,
                              bool *download_pending, bool *scrobbled,
                              uint32_t *last_timeline_ms,
-                             PlayerScreenState *screen_state)
+                             PlayerScreenState *screen_state,
+                             int transcode)
 {
     *is_local_file = (queue->tracks[queue->current_index].local_path[0] != '\0');
 
@@ -411,7 +412,11 @@ static void load_next_track(PlexQueue *queue, bool *is_local_file,
         temp_path[temp_path_size - 1] = '\0';
         ext[0] = '\0';
     } else {
-        extract_ext(queue->tracks[queue->current_index].media_key, ext, ext_size);
+        if (transcode)
+            strncpy(ext, "opus", ext_size - 1);
+        else
+            extract_ext(queue->tracks[queue->current_index].media_key, ext, ext_size);
+        ext[ext_size - 1] = '\0';
         build_temp_path(ext, temp_path, temp_path_size);
     }
 
@@ -459,7 +464,11 @@ AppModule module_player_run(SDL_Surface *screen)
         temp_path[sizeof(temp_path) - 1] = '\0';
         ext[0] = '\0';
     } else {
-        extract_ext(queue->tracks[queue->current_index].media_key, ext, sizeof(ext));
+        if (cfg->stream_bitrate_kbps > 0)
+            strncpy(ext, "opus", sizeof(ext) - 1);
+        else
+            extract_ext(queue->tracks[queue->current_index].media_key, ext, sizeof(ext));
+        ext[sizeof(ext) - 1] = '\0';
         build_temp_path(ext, temp_path, sizeof(temp_path));
     }
 
@@ -563,6 +572,10 @@ AppModule module_player_run(SDL_Surface *screen)
                 /* Load and play */
                 Player_stop();
                 if (Player_load(temp_path) == 0) {
+                    if (cfg->stream_bitrate_kbps > 0) {
+                        int dur = queue->tracks[queue->current_index].duration_ms;
+                        Player_setTotalFrames((int64_t)((dur / 1000.0) * 48000.0));
+                    }
                     Player_play();
                     scrobbled        = false;
                     last_timeline_ms = SDL_GetTicks();
@@ -585,18 +598,23 @@ AppModule module_player_run(SDL_Surface *screen)
             }
 
             /* Try to start playback early once enough bytes are on disk.
-             * Only for formats whose total_frames is header-derived (MP3/FLAC/WAV/M4A);
-             * AAC/OGG/Opus compute total_frames by seeking to EOF on open, which gives
-             * a wrong value on a partial file and causes premature track termination. */
+             * MP3/FLAC/WAV/M4A: total_frames is header-derived, safe on partial files.
+             * Opus (transcoded): total_frames is overridden via Player_setTotalFrames using
+             * Plex-provided duration, so it is also safe for early-start. */
             if (!download_pending
                     && (strcasecmp(ext, "mp3") == 0
                         || strcasecmp(ext, "flac") == 0
                         || strcasecmp(ext, "wav") == 0
-                        || strcasecmp(ext, "m4a") == 0)) {
+                        || strcasecmp(ext, "m4a") == 0
+                        || strcasecmp(ext, "opus") == 0)) {
                 struct stat st;
                 if (stat(temp_path, &st) == 0 && st.st_size >= PREBUFFER_BYTES) {
                     Player_stop();
                     if (Player_load(temp_path) == 0) {
+                        if (cfg->stream_bitrate_kbps > 0) {
+                            int dur = queue->tracks[queue->current_index].duration_ms;
+                            Player_setTotalFrames((int64_t)((dur / 1000.0) * 48000.0));
+                        }
                         Player_setFileGrowing(true);
                         Player_play();
                         download_pending    = true;
@@ -679,7 +697,8 @@ AppModule module_player_run(SDL_Surface *screen)
                                     temp_path, sizeof(temp_path),
                                     &dl_ctx, &dl_thread,
                                     &download_pending, &scrobbled,
-                                    &last_timeline_ms, &screen_state);
+                                    &last_timeline_ms, &screen_state,
+                                    cfg->stream_bitrate_kbps > 0);
                     dirty = 1;
                     goto render;
                 } else {
@@ -777,8 +796,12 @@ AppModule module_player_run(SDL_Surface *screen)
                         temp_path[sizeof(temp_path) - 1] = '\0';
                         ext[0] = '\0';
                     } else {
-                        extract_ext(queue->tracks[queue->current_index].media_key,
-                                    ext, sizeof(ext));
+                        if (cfg->stream_bitrate_kbps > 0)
+                            strncpy(ext, "opus", sizeof(ext) - 1);
+                        else
+                            extract_ext(queue->tracks[queue->current_index].media_key,
+                                        ext, sizeof(ext));
+                        ext[sizeof(ext) - 1] = '\0';
                         build_temp_path(ext, temp_path, sizeof(temp_path));
                     }
 
@@ -804,7 +827,8 @@ AppModule module_player_run(SDL_Surface *screen)
                                     temp_path, sizeof(temp_path),
                                     &dl_ctx, &dl_thread,
                                     &download_pending, &scrobbled,
-                                    &last_timeline_ms, &screen_state);
+                                    &last_timeline_ms, &screen_state,
+                                    cfg->stream_bitrate_kbps > 0);
                     dirty = 1;
                 }
             }
@@ -835,8 +859,12 @@ AppModule module_player_run(SDL_Surface *screen)
                         temp_path[sizeof(temp_path) - 1] = '\0';
                         ext[0] = '\0';
                     } else {
-                        extract_ext(queue->tracks[queue->current_index].media_key,
-                                    ext, sizeof(ext));
+                        if (cfg->stream_bitrate_kbps > 0)
+                            strncpy(ext, "opus", sizeof(ext) - 1);
+                        else
+                            extract_ext(queue->tracks[queue->current_index].media_key,
+                                        ext, sizeof(ext));
+                        ext[sizeof(ext) - 1] = '\0';
                         build_temp_path(ext, temp_path, sizeof(temp_path));
                     }
 
@@ -862,7 +890,8 @@ AppModule module_player_run(SDL_Surface *screen)
                                     temp_path, sizeof(temp_path),
                                     &dl_ctx, &dl_thread,
                                     &download_pending, &scrobbled,
-                                    &last_timeline_ms, &screen_state);
+                                    &last_timeline_ms, &screen_state,
+                                    cfg->stream_bitrate_kbps > 0);
                     dirty = 1;
                 }
             }
@@ -903,8 +932,12 @@ AppModule module_player_run(SDL_Surface *screen)
                         /* stay in ERROR state */
                     }
                 } else {
-                    extract_ext(queue->tracks[queue->current_index].media_key,
-                                ext, sizeof(ext));
+                    if (cfg->stream_bitrate_kbps > 0)
+                        strncpy(ext, "opus", sizeof(ext) - 1);
+                    else
+                        extract_ext(queue->tracks[queue->current_index].media_key,
+                                    ext, sizeof(ext));
+                    ext[sizeof(ext) - 1] = '\0';
                     build_temp_path(ext, temp_path, sizeof(temp_path));
                     start_download(&dl_ctx, &dl_thread, queue, temp_path);
                     screen_state = PLAYER_SCREEN_DOWNLOADING;

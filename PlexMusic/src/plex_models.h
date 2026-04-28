@@ -17,6 +17,8 @@ typedef struct {
     int  screen_timeout;             /* seconds before screen sleeps; 0 = disabled */
     int  library_id;                 /* section_id of the selected music library; 0 = none */
     char library_name[PLEX_MAX_STR]; /* display name of the selected music library */
+    int  stream_bitrate_kbps;        /* 0 = Original; 96/128/192/256/320 = transcode to Opus */
+    int  download_bitrate_kbps;      /* same, for offline downloads */
 } PlexConfig;
 
 typedef struct {

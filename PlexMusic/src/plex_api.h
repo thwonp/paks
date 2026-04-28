@@ -42,6 +42,13 @@ void plex_api_get_stream_url(const PlexConfig *cfg, const PlexTrack *track,
                              char *out_url, int out_url_size);
 
 /*
+ * Build a Plex audio transcode URL. Appends audioCodec=opus&audioBitrate={kbps} params.
+ * bitrate_kbps must be > 0. out_url must be PLEX_MAX_URL bytes.
+ */
+void plex_api_get_transcode_url(const PlexConfig *cfg, const PlexTrack *track,
+                                int bitrate_kbps, char *out_url, int out_url_size);
+
+/*
  * Report playback state to Plex (scrobbling).
  * state: "playing", "paused", "stopped"
  * Fire-and-forget; errors are silently ignored.
