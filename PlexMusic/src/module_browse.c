@@ -48,7 +48,7 @@ typedef enum {
 #define ART_PANEL_PAD SCALE1(8)
 
 /* How close the cursor must be to the end of loaded artists to trigger a page fetch */
-#define ARTIST_PAGE_LOOKAHEAD 5
+#define ARTIST_PAGE_LOOKAHEAD 20
 
 /* =========================================================================
  * Async worker
