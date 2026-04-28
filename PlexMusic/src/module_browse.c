@@ -335,10 +335,11 @@ static void render_browse_screen(SDL_Surface *screen,
                                                     void *userdata),
                                   void *userdata,
                                   const char *btn_a_label,
-                                  const char *btn_b_label)
+                                  const char *btn_b_label,
+                                  int show_panel)
 {
     int hw = screen->w;
-    int list_w = (hw * LIST_PANEL_FRAC) / 100;
+    int list_w = show_panel ? (hw * LIST_PANEL_FRAC) / 100 : hw;
 
     /* Background */
     SDL_FillRect(screen, NULL, SDL_MapRGB(screen->format, 0x12, 0x12, 0x12));
@@ -369,8 +370,9 @@ static void render_browse_screen(SDL_Surface *screen,
 
     render_scroll_indicators(screen, *scroll, layout.items_per_page, total_items);
 
-    /* Art panel */
-    render_art_panel(screen, art, art_line1, art_line2);
+    /* Art panel (only for BROWSE_ALBUMS) */
+    if (show_panel)
+        render_art_panel(screen, art, art_line1, art_line2);
 
     /* Button hints */
     if (btn_a_label && btn_b_label) {
@@ -656,10 +658,6 @@ AppModule module_browse_run(SDL_Surface *screen)
                 artist_selected = 0;
                 artist_scroll   = 0;
                 artists_page_loading = false;
-                if (artists_loaded > 0 && artists[0].thumb[0]) {
-                    snprintf(last_art_thumb, sizeof(last_art_thumb), "%s", artists[0].thumb);
-                    plex_art_fetch(cfg, artists[0].thumb);
-                }
                 state = BROWSE_ARTISTS;
                 dirty = 1;
                 GFX_sync();
@@ -831,10 +829,6 @@ AppModule module_browse_run(SDL_Surface *screen)
                 artists_loaded = plex_downloads_get_artists(artists, PLEX_MAX_ITEMS);
                 artists_total  = artists_loaded;
                 artists_ls     = LOAD_READY;
-                if (artists_loaded > 0 && artists[0].thumb[0]) {
-                    snprintf(last_art_thumb, sizeof(last_art_thumb), "%s", artists[0].thumb);
-                    plex_art_fetch(cfg, artists[0].thumb);
-                }
                 state = BROWSE_ARTISTS;
                 dirty = 1;
                 GFX_sync();
@@ -864,7 +858,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      art_line1,
                                      NULL, plex_art_get(),
                                      lib_get_label, &lctx,
-                                     "SELECT", "QUIT");
+                                     "SELECT", "QUIT", 0);
                 /* Extra hint for offline mode toggle */
                 GFX_blitButtonGroup((char*[]){"SELECT", "OFFLINE", NULL}, 0, screen, 0);
                 if (quit_confirm_active) {
@@ -920,11 +914,6 @@ AppModule module_browse_run(SDL_Surface *screen)
                 artists_total  = s_load.artists_page.total;
                 PLEX_LOG("[Browse] Got %d / %d artists\n", artists_loaded, artists_total);
 
-                /* Trigger art fetch for initial selection */
-                if (artists_loaded > 0 && artists[0].thumb[0]) {
-                    snprintf(last_art_thumb, sizeof(last_art_thumb), "%s", artists[0].thumb);
-                    plex_art_fetch(cfg, artists[0].thumb);
-                }
                 dirty = 1;
                 artists_ls = LOAD_READY;
                 GFX_sync();
@@ -983,13 +972,6 @@ AppModule module_browse_run(SDL_Surface *screen)
                 artist_selected = (artist_selected > 0) ? artist_selected - 1
                                                          : visible_items - 1;
                 if (artist_selected != prev) {
-                    if (artist_selected < artists_loaded &&
-                        artists[artist_selected].thumb[0] &&
-                        strcmp(artists[artist_selected].thumb, last_art_thumb) != 0) {
-                        snprintf(last_art_thumb, sizeof(last_art_thumb),
-                                 "%s", artists[artist_selected].thumb);
-                        plex_art_fetch(cfg, artists[artist_selected].thumb);
-                    }
                     dirty = 1;
                 }
             } else if (PAD_justRepeated(BTN_DOWN)) {
@@ -997,13 +979,6 @@ AppModule module_browse_run(SDL_Surface *screen)
                 artist_selected = (artist_selected < visible_items - 1)
                                       ? artist_selected + 1 : 0;
                 if (artist_selected != prev) {
-                    if (artist_selected < artists_loaded &&
-                        artists[artist_selected].thumb[0] &&
-                        strcmp(artists[artist_selected].thumb, last_art_thumb) != 0) {
-                        snprintf(last_art_thumb, sizeof(last_art_thumb),
-                                 "%s", artists[artist_selected].thumb);
-                        plex_art_fetch(cfg, artists[artist_selected].thumb);
-                    }
                     dirty = 1;
                 }
             } else if (PAD_justPressed(BTN_A)) {
@@ -1056,9 +1031,6 @@ AppModule module_browse_run(SDL_Surface *screen)
                 continue;
             }
 
-            /* Poll art async */
-            if (plex_art_is_fetching()) dirty = 1;
-
             /* Render */
             if (dirty) {
                 ArtistLabelCtx actx;
@@ -1076,7 +1048,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      visible_items,
                                      art_line1, NULL, plex_art_get(),
                                      artist_get_label, &actx,
-                                     "SELECT", "BACK");
+                                     "SELECT", "BACK", 0);
                 if (cfg->offline_mode)
                     GFX_blitButtonGroup((char*[]){"SELECT", "ONLINE", NULL}, 0, screen, 0);
                 GFX_flip(screen);
@@ -1122,12 +1094,6 @@ AppModule module_browse_run(SDL_Surface *screen)
                         albums_ls = LOAD_IDLE;
                         last_art_thumb[0] = '\0';
                         plex_art_clear();
-                        if (artist_selected < artists_loaded &&
-                            artists[artist_selected].thumb[0]) {
-                            snprintf(last_art_thumb, sizeof(last_art_thumb),
-                                     "%s", artists[artist_selected].thumb);
-                            plex_art_fetch(cfg, artists[artist_selected].thumb);
-                        }
                         state = BROWSE_ARTISTS;
                         dirty = 1;
                     }
@@ -1209,12 +1175,6 @@ AppModule module_browse_run(SDL_Surface *screen)
             } else if (PAD_justPressed(BTN_B)) {
                 last_art_thumb[0] = '\0';
                 plex_art_clear();
-                /* Restore art for the currently selected artist */
-                if (artist_selected < artists_loaded && artists[artist_selected].thumb[0]) {
-                    snprintf(last_art_thumb, sizeof(last_art_thumb),
-                             "%s", artists[artist_selected].thumb);
-                    plex_art_fetch(cfg, artists[artist_selected].thumb);
-                }
                 state = BROWSE_ARTISTS;
                 dirty = 1;
                 GFX_sync();
@@ -1249,7 +1209,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      album_count,
                                      art_line1, art_line2, plex_art_get(),
                                      album_get_label, &alctx,
-                                     "SELECT", "BACK");
+                                     "SELECT", "BACK", 1);
                 if (!cfg->offline_mode)
                     GFX_blitButtonGroup((char*[]){"Y", "DOWNLOAD", NULL}, 0, screen, 0);
                 GFX_flip(screen);
@@ -1393,7 +1353,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      art_line2[0] ? art_line2 : NULL,
                                      plex_art_get(),
                                      track_get_label, &tctx,
-                                     "PLAY", "BACK");
+                                     "PLAY", "BACK", 0);
                 GFX_flip(screen);
                 dirty = 0;
             } else {
@@ -1426,12 +1386,6 @@ AppModule module_browse_run(SDL_Surface *screen)
                 plex_art_clear();
                 switch (net_error_back) {
                     case BROWSE_ARTISTS:
-                        if (artist_selected < artists_loaded &&
-                            artists[artist_selected].thumb[0]) {
-                            snprintf(last_art_thumb, sizeof(last_art_thumb),
-                                     "%s", artists[artist_selected].thumb);
-                            plex_art_fetch(cfg, artists[artist_selected].thumb);
-                        }
                         break;
                     case BROWSE_ALBUMS:
                         if (album_selected < album_count &&
