@@ -62,6 +62,7 @@ static struct {
     LoadState        status;         /* current worker status */
     volatile bool    cancel;         /* set by main thread to discard result */
     bool             thread_started; /* true if thread created and not yet joined */
+    int              generation;     /* incremented on each kick; zombie threads check this */
     /* discriminator */
     BrowseState      type;
     /* cfg copy (main thread writes before kick; worker reads once at start) */
@@ -85,16 +86,20 @@ static struct {
     int              all_albums_offset; /* offset for BROWSE_ALL_ALBUMS_PAGE worker */
 } s_load = { .lock = PTHREAD_MUTEX_INITIALIZER };
 
+static LoadState browse_load_poll(void);
+
 static void *browse_load_worker(void *arg)
 {
     (void)arg;
     /* Copy cfg fields off the shared struct before releasing the lock */
     PlexConfig cfg;
     memset(&cfg, 0, sizeof(cfg));
+    int my_generation;
     pthread_mutex_lock(&s_load.lock);
     strncpy(cfg.server_url, s_load.server_url, sizeof(cfg.server_url) - 1);
     strncpy(cfg.token,      s_load.token,      sizeof(cfg.token) - 1);
     BrowseState type = s_load.type;
+    my_generation    = s_load.generation;
     pthread_mutex_unlock(&s_load.lock);
 
     int rc = 0;
@@ -109,7 +114,8 @@ static void *browse_load_worker(void *arg)
             rc = plex_api_get_artists(&cfg, s_load.library_id, 0, PLEX_MAX_ITEMS,
                                       s_load.artists, &page);
             pthread_mutex_lock(&s_load.lock);
-            s_load.artists_page = page;
+            if (my_generation == s_load.generation)
+                s_load.artists_page = page;
             pthread_mutex_unlock(&s_load.lock);
             break;
         }
@@ -131,7 +137,8 @@ static void *browse_load_worker(void *arg)
                                           s_load.artists + offset, &page);
             }
             pthread_mutex_lock(&s_load.lock);
-            s_load.artists_page = page;
+            if (my_generation == s_load.generation)
+                s_load.artists_page = page;
             pthread_mutex_unlock(&s_load.lock);
             break;
         }
@@ -141,7 +148,8 @@ static void *browse_load_worker(void *arg)
             rc = plex_api_get_all_albums(&cfg, s_load.library_id, 0, PLEX_MAX_ITEMS,
                                          s_load.albums, &page);
             pthread_mutex_lock(&s_load.lock);
-            s_load.all_albums_page = page;
+            if (my_generation == s_load.generation)
+                s_load.all_albums_page = page;
             pthread_mutex_unlock(&s_load.lock);
             break;
         }
@@ -155,7 +163,8 @@ static void *browse_load_worker(void *arg)
                                              s_load.albums + offset, &page);
             }
             pthread_mutex_lock(&s_load.lock);
-            s_load.all_albums_page = page;
+            if (my_generation == s_load.generation)
+                s_load.all_albums_page = page;
             pthread_mutex_unlock(&s_load.lock);
             break;
         }
@@ -164,10 +173,12 @@ static void *browse_load_worker(void *arg)
     }
 
     pthread_mutex_lock(&s_load.lock);
-    if (s_load.cancel || rc != 0)
-        s_load.status = LOAD_ERROR;
-    else
-        s_load.status = LOAD_DONE;
+    if (my_generation == s_load.generation) {
+        if (s_load.cancel || rc != 0)
+            s_load.status = LOAD_ERROR;
+        else
+            s_load.status = LOAD_DONE;
+    }
     pthread_mutex_unlock(&s_load.lock);
 
     return NULL;
@@ -181,14 +192,20 @@ static void browse_load_kick(BrowseState type, const PlexConfig *cfg,
                              PlexAlbum *albums, int *album_count,
                              PlexTrack *tracks, int *track_count)
 {
-    /* Join any previous thread (handles cancelled loads that have since finished) */
+    /* Detach or join any previous thread */
     if (s_load.thread_started) {
-        pthread_join(s_load.thread, NULL);
+        LoadState cur = browse_load_poll();
+        if (cur == LOAD_RUNNING) {
+            pthread_detach(s_load.thread);   /* let zombie die naturally */
+        } else {
+            pthread_join(s_load.thread, NULL);  /* already done — fast */
+        }
         s_load.thread_started = false;
     }
 
     pthread_mutex_lock(&s_load.lock);
     s_load.cancel         = false;
+    s_load.generation++;                 /* invalidates any zombie thread */
     s_load.type           = type;
     strncpy(s_load.server_url, cfg->server_url, sizeof(s_load.server_url) - 1);
     strncpy(s_load.token,      cfg->token,      sizeof(s_load.token) - 1);
