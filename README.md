@@ -40,3 +40,5 @@ A native Plex music client for NextUI. Browse your Plex music library, stream tr
 - Bug hunting + more testing
 - Playlists
 - Custom sort options
+- Transcode format/quality options
+- Other QOL stuff and features as I think of them (or as requested)
