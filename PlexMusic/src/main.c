@@ -129,8 +129,11 @@ int main(int argc, char *argv[]) {
     }
     PLEX_LOG("[DIAG] plex_config_load done\n");
 
-    if (!g_config.offline_mode)
+    if (!g_config.offline_mode) {
+        SDL_FillRect(screen, NULL, SDL_MapRGB(screen->format, 0x12, 0x12, 0x12));
+        GFX_flip(screen);
         apply_relay_fallback(&g_config);
+    }
     PLEX_LOG("[DIAG] startup URL probe done\n");
 
     /*
@@ -149,8 +152,11 @@ int main(int argc, char *argv[]) {
         switch (current) {
         case MODULE_AUTH:
             next = module_auth_run(screen);
-            if (next == MODULE_BROWSE && !g_config.offline_mode)
+            if (next == MODULE_BROWSE && !g_config.offline_mode) {
+                SDL_FillRect(screen, NULL, SDL_MapRGB(screen->format, 0x12, 0x12, 0x12));
+                GFX_flip(screen);
                 apply_relay_fallback(&g_config);
+            }
             break;
         case MODULE_BROWSE:
             next = module_browse_run(screen);

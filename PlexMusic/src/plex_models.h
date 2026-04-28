@@ -15,6 +15,8 @@ typedef struct {
     char server_id[PLEX_MAX_STR];    /* machineIdentifier */
     bool offline_mode;               /* true = offline browse; persisted to config.json */
     int  screen_timeout;             /* seconds before screen sleeps; 0 = disabled */
+    int  library_id;                 /* section_id of the selected music library; 0 = none */
+    char library_name[PLEX_MAX_STR]; /* display name of the selected music library */
 } PlexConfig;
 
 typedef struct {

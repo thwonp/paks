@@ -29,7 +29,8 @@ typedef enum {
 #define SETTINGS_ITEM_SWITCH_SERVER  0
 #define SETTINGS_ITEM_SIGN_OUT       1
 #define SETTINGS_ITEM_SCREEN_TIMEOUT 2
-#define SETTINGS_ITEM_COUNT          3
+#define SETTINGS_ITEM_LIBRARY        3
+#define SETTINGS_ITEM_COUNT          4
 
 /* Milliseconds to show "Server updated." confirmation */
 #define SERVER_UPDATED_PAUSE_MS 1500
@@ -124,10 +125,17 @@ static void render_settings_menu(SDL_Surface *screen, int show_setting,
     snprintf(timeout_label, sizeof(timeout_label), "Screen timeout: %s",
              screen_timeout_label(cfg->screen_timeout));
 
+    char library_label[PLEX_MAX_STR + 12];
+    if (cfg->library_name[0])
+        snprintf(library_label, sizeof(library_label), "Library: %s", cfg->library_name);
+    else
+        snprintf(library_label, sizeof(library_label), "Library: (not set)");
+
     const char *labels[SETTINGS_ITEM_COUNT] = {
         "Switch Server",
         "Sign Out",
-        timeout_label
+        timeout_label,
+        library_label,
     };
 
     /* Adjust list_y for menu items so they appear below the header block */
@@ -325,6 +333,9 @@ AppModule module_settings_run(SDL_Surface *screen)
                     cfg->screen_timeout = SCREEN_TIMEOUT_VALUES[idx];
                     plex_config_save(cfg);
                     dirty = 1;
+                } else if (menu_selected == SETTINGS_ITEM_LIBRARY) {
+                    module_browse_request_library_pick();
+                    return MODULE_BROWSE;
                 }
             } else if (PAD_justPressed(BTN_LEFT)) {
                 if (menu_selected == SETTINGS_ITEM_SCREEN_TIMEOUT) {

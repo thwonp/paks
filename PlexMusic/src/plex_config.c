@@ -100,6 +100,11 @@ int plex_config_load(PlexConfig *cfg)
         cfg->screen_timeout = (st > 0) ? st : 30;
     }
 
+    cfg->library_id = (int)json_object_get_number(obj, "library_id");
+    const char *library_name = json_object_get_string(obj, "library_name");
+    if (library_name)
+        strncpy(cfg->library_name, library_name, sizeof(cfg->library_name) - 1);
+
     json_value_free(root);
     return 0;
 }
@@ -122,6 +127,8 @@ int plex_config_save(const PlexConfig *cfg)
     json_object_set_string(obj, "server_id",    cfg->server_id);
     json_object_set_boolean(obj, "offline_mode", cfg->offline_mode ? 1 : 0);
     json_object_set_number(obj, "screen_timeout", cfg->screen_timeout);
+    json_object_set_number(obj, "library_id",     cfg->library_id);
+    json_object_set_string(obj, "library_name",   cfg->library_name);
 
     char *json_str = json_serialize_to_string_pretty(root);
     json_value_free(root);
