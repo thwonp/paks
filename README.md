@@ -38,10 +38,13 @@ A native Plex music client for NextUI. Browse your Plex music library, stream tr
 - Configurable screen sleep timeout
 - MENU+SELECT wakes the screen from sleep
 - MENU+START quits from anywhere instantly
-- Settings: switch server, sign out, change library, adjust screen timeout
+- Settings: switch server, sign out, change library, adjust screen timeout, transcode options
 
 **Planned Features**
 - Bug hunting + more testing
 - Playlists
 - Custom sort options
 - Other QoL stuff and features as I think of them (or as requested)
+
+**Disclaimer**
+This code was written with good vibes only (i.e Claude). I'm not a fullstack dev, just a person who wanted to listen to Plex on his TrimUI Brick.
