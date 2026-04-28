@@ -6,7 +6,7 @@ Homebrew paks for the **TrimUI Brick** running [NextUI](https://github.com/LoveR
 
 ## PlexMusic.pak
 
-A native Plex music client. Browse your Plex music library, stream tracks over your local network, and download albums for offline listening — all from the couch with a controller.
+A native Plex music client for NextUI. Browse your Plex music library, stream tracks over your local network, and download albums for offline listening.
 
 ### Features
 
@@ -35,3 +35,8 @@ A native Plex music client. Browse your Plex music library, stream tracks over y
 - MENU+SELECT wakes the screen from sleep
 - MENU+START quits from anywhere instantly
 - Settings: switch server, sign out, change library, adjust screen timeout
+
+**Planned Features**
+- Bug hunting + more testing
+- Playlists
+- Custom sort options
