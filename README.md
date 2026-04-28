@@ -17,11 +17,15 @@ A native Plex music client for NextUI. Browse your Plex music library, stream tr
 
 **Playback**
 - Streams MP3, FLAC, WAV, M4A, AAC, OGG, and Opus
+- Set transcode quality for Opus conversions.
 - Audio starts after a small buffer — no waiting for the full track to download
+- - Note: Only when Original quality is set - WIP on getting this working for transcodes.
 - Scrobbles plays back to your Plex server
+
 
 **Offline**
 - Download albums from the browse screen (Y button on any album)
+- Set download quality targets (original or Opus transcode)
 - Full offline mode: browse and play downloaded albums without a network connection
 - Offline Artists and Albums views mirror the online experience
 
@@ -40,5 +44,4 @@ A native Plex music client for NextUI. Browse your Plex music library, stream tr
 - Bug hunting + more testing
 - Playlists
 - Custom sort options
-- Transcode format/quality options
-- Other QOL stuff and features as I think of them (or as requested)
+- Other QoL stuff and features as I think of them (or as requested)
