@@ -96,7 +96,8 @@ static int bitrate_index(int kbps)
  *   - "Sign Out" item
  */
 static void render_settings_menu(SDL_Surface *screen, int show_setting,
-                                  int menu_selected, int scroll)
+                                  int menu_selected, int scroll,
+                                  int menu_items_visible)
 {
     const PlexConfig *cfg = plex_config_get_mutable();
     int hw = screen->w;
@@ -172,10 +173,6 @@ static void render_settings_menu(SDL_Surface *screen, int show_setting,
     /* Adjust list_y for menu items so they appear below the header block */
     ListLayout menu_layout = layout;
     menu_layout.list_y = layout.list_y + layout.item_h * 2 + SCALE1(8);
-
-    /* Header occupies 2 rows + 8 px gap; compute how many item rows fit below it */
-    int menu_items_visible = (layout.list_h - layout.item_h * 2 - SCALE1(8)) / layout.item_h;
-    if (menu_items_visible < 1) menu_items_visible = 1;
 
     for (int i = scroll; i < SETTINGS_ITEM_COUNT && i < scroll + menu_items_visible; i++) {
         bool sel = (i == menu_selected);
@@ -274,9 +271,11 @@ static void render_server_error(SDL_Surface *screen)
 /*
  * Render the sign-out confirmation dialog overlay on top of the menu.
  */
-static void render_signout_dialog(SDL_Surface *screen, int show_setting, int scroll)
+static void render_signout_dialog(SDL_Surface *screen, int show_setting, int scroll,
+                                   int menu_items_visible)
 {
-    render_settings_menu(screen, show_setting, SETTINGS_ITEM_SIGN_OUT, scroll);
+    render_settings_menu(screen, show_setting, SETTINGS_ITEM_SIGN_OUT, scroll,
+                         menu_items_visible);
 
     int box_w = SCALE1(280);
     int box_h = SCALE1(80);
@@ -311,8 +310,16 @@ AppModule module_settings_run(SDL_Surface *screen)
     SettingsState state = SETTINGS_STATE_MENU;
     int menu_selected = SETTINGS_ITEM_SWITCH_SERVER;
     int menu_scroll = 0;
+    int menu_items_visible;
     int dirty = 1;
     int show_setting = 0;
+
+    /* Compute once — screen size is fixed for the session */
+    {
+        ListLayout il = calc_list_layout(screen);
+        int v = (il.list_h - il.item_h * 2 - SCALE1(8)) / il.item_h;
+        menu_items_visible = (v < 1) ? 1 : v;
+    }
 
     PlexServer servers[PLEX_MAX_SERVERS];
     int server_count = 0;
@@ -342,17 +349,13 @@ AppModule module_settings_run(SDL_Surface *screen)
             if (PAD_justRepeated(BTN_UP)) {
                 if (menu_selected > 0) {
                     menu_selected--;
-                    /* menu_items_visible is not in scope here; pass a constant.
-                     * Use SETTINGS_ITEM_COUNT - 2 as a safe upper bound for the visible count:
-                     * adjust_list_scroll only clamps scroll, so over-estimating is fine.
-                     * Actual clipping is done in the render function. */
-                    adjust_list_scroll(menu_selected, &menu_scroll, SETTINGS_ITEM_COUNT - 2);
+                    adjust_list_scroll(menu_selected, &menu_scroll, menu_items_visible);
                     dirty = 1;
                 }
             } else if (PAD_justRepeated(BTN_DOWN)) {
                 if (menu_selected < SETTINGS_ITEM_COUNT - 1) {
                     menu_selected++;
-                    adjust_list_scroll(menu_selected, &menu_scroll, SETTINGS_ITEM_COUNT - 2);
+                    adjust_list_scroll(menu_selected, &menu_scroll, menu_items_visible);
                     dirty = 1;
                 }
             } else if (PAD_justPressed(BTN_A) || PAD_justPressed(BTN_RIGHT)) {
@@ -424,7 +427,8 @@ AppModule module_settings_run(SDL_Surface *screen)
             }
 
             if (dirty) {
-                render_settings_menu(screen, show_setting, menu_selected, menu_scroll);
+                render_settings_menu(screen, show_setting, menu_selected, menu_scroll,
+                                     menu_items_visible);
                 GFX_flip(screen);
                 dirty = 0;
             } else {
@@ -546,7 +550,7 @@ AppModule module_settings_run(SDL_Surface *screen)
             }
 
             if (dirty) {
-                render_signout_dialog(screen, show_setting, menu_scroll);
+                render_signout_dialog(screen, show_setting, menu_scroll, menu_items_visible);
                 GFX_flip(screen);
                 dirty = 0;
             } else {
