@@ -14,6 +14,7 @@ typedef struct {
     char server_name[PLEX_MAX_STR];
     char server_id[PLEX_MAX_STR];    /* machineIdentifier */
     bool offline_mode;               /* true = offline browse; persisted to config.json */
+    int  screen_timeout;             /* seconds before screen sleeps; 0 = disabled */
 } PlexConfig;
 
 typedef struct {

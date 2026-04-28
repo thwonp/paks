@@ -95,6 +95,11 @@ int plex_config_load(PlexConfig *cfg)
 
     cfg->offline_mode = (json_object_get_boolean(obj, "offline_mode") == 1);
 
+    {
+        int st = (int)json_object_get_number(obj, "screen_timeout");
+        cfg->screen_timeout = (st > 0) ? st : 30;
+    }
+
     json_value_free(root);
     return 0;
 }
@@ -116,6 +121,7 @@ int plex_config_save(const PlexConfig *cfg)
     json_object_set_string(obj, "server_name",  cfg->server_name);
     json_object_set_string(obj, "server_id",    cfg->server_id);
     json_object_set_boolean(obj, "offline_mode", cfg->offline_mode ? 1 : 0);
+    json_object_set_number(obj, "screen_timeout", cfg->screen_timeout);
 
     char *json_str = json_serialize_to_string_pretty(root);
     json_value_free(root);

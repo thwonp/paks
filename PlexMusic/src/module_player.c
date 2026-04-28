@@ -14,6 +14,8 @@
 #include <SDL2/SDL_ttf.h>
 
 #include "api.h"
+#include "msettings.h"
+#include "module_common.h"
 #include "plex_log.h"
 #include "background.h"
 #include "defines.h"
@@ -26,6 +28,8 @@
 #include "plex_queue.h"
 #include "ui_fonts.h"
 #include "ui_utils.h"
+
+extern void PLAT_enableBacklight(int enable);
 
 /* ------------------------------------------------------------------
  * Constants
@@ -44,6 +48,13 @@ typedef enum {
     PLAYER_SCREEN_PLAYING,      /* track loaded and playing/paused */
     PLAYER_SCREEN_ERROR,        /* download or playback error */
 } PlayerScreenState;
+
+/* ------------------------------------------------------------------
+ * Sleep state
+ * ------------------------------------------------------------------ */
+
+static bool   s_screen_sleeping   = false;
+static Uint32 s_last_activity_ms  = 0;
 
 /* ------------------------------------------------------------------
  * Scrobble fire-and-forget infrastructure
@@ -478,6 +489,7 @@ AppModule module_player_run(SDL_Surface *screen)
     }
 
     int           dirty = 1;
+    int           show_setting = 0;
     pthread_t     dl_thread;
     DownloadCtx   dl_ctx;
     memset(&dl_ctx, 0, sizeof(dl_ctx));
@@ -499,9 +511,41 @@ AppModule module_player_run(SDL_Surface *screen)
         }
     }
 
+    /* Sleep state init */
+    s_screen_sleeping  = false;
+    s_last_activity_ms = SDL_GetTicks();
+
     while (1) {
         GFX_startFrame();
         PAD_poll();
+
+        /* ---- Screen sleep / wake ---- */
+        if (cfg->screen_timeout > 0 && !s_screen_sleeping) {
+            if (SDL_GetTicks() - s_last_activity_ms > (Uint32)(cfg->screen_timeout * 1000)) {
+                SetRawBrightness(0);
+                s_screen_sleeping = true;
+            }
+        }
+
+        if (s_screen_sleeping) {
+            GlobalInputResult global = ModuleCommon_handleGlobalInput(screen, &show_setting, 0);
+            if (global.should_quit) {
+                PLAT_enableBacklight(1);
+                s_screen_sleeping = false;
+                return MODULE_QUIT;
+            }
+            if (PAD_isPressed(BTN_MENU) && PAD_justPressed(BTN_SELECT)) {
+                PLAT_enableBacklight(1);
+                s_screen_sleeping  = false;
+                s_last_activity_ms = SDL_GetTicks();
+                dirty = 1;
+            }
+            GFX_sync();
+            continue;  /* consume all other input while sleeping */
+        }
+
+        /* Reset idle timer on any input while awake */
+        if (PAD_anyPressed()) s_last_activity_ms = SDL_GetTicks();
 
         /* ---- Art async update ---- */
         if (plex_art_is_fetching()) dirty = 1;
@@ -576,6 +620,7 @@ AppModule module_player_run(SDL_Surface *screen)
                     remove(temp_path);
                 }
                 Player_stop();
+                if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
                 return MODULE_BROWSE;
             }
             /* Start long-press to quit */
@@ -586,6 +631,7 @@ AppModule module_player_run(SDL_Surface *screen)
                     remove(temp_path);
                 }
                 Player_stop();
+                if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
                 return MODULE_QUIT;
             }
         }
@@ -638,6 +684,7 @@ AppModule module_player_run(SDL_Surface *screen)
                     goto render;
                 } else {
                     /* End of queue — already stopped above; just return to browse */
+                    if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
                     return MODULE_BROWSE;
                 }
             }
@@ -682,6 +729,7 @@ AppModule module_player_run(SDL_Surface *screen)
                 }
                 /* Keep playing in background, return to browse */
                 Background_setActive(BG_MUSIC);
+                if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
                 return MODULE_BROWSE;
             }
             else if (PAD_justPressed(BTN_START)) {
@@ -699,6 +747,7 @@ AppModule module_player_run(SDL_Surface *screen)
                 }
                 Player_stop();
                 if (!is_local_file) remove(temp_path);
+                if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
                 return MODULE_QUIT;
             }
             else if (PAD_justPressed(BTN_LEFT) || PAD_justPressed(BTN_L1)) {
@@ -865,6 +914,7 @@ AppModule module_player_run(SDL_Surface *screen)
             else if (PAD_justPressed(BTN_B)) {
                 if (!is_local_file) remove(temp_path);
                 Player_stop();
+                if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
                 return MODULE_BROWSE;
             }
         }

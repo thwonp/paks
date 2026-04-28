@@ -26,12 +26,42 @@ typedef enum {
 } SettingsState;
 
 /* Menu item indices (items 0 and 1 are header lines — non-selectable) */
-#define SETTINGS_ITEM_SWITCH_SERVER 0
-#define SETTINGS_ITEM_SIGN_OUT      1
-#define SETTINGS_ITEM_COUNT         2
+#define SETTINGS_ITEM_SWITCH_SERVER  0
+#define SETTINGS_ITEM_SIGN_OUT       1
+#define SETTINGS_ITEM_SCREEN_TIMEOUT 2
+#define SETTINGS_ITEM_COUNT          3
 
 /* Milliseconds to show "Server updated." confirmation */
 #define SERVER_UPDATED_PAUSE_MS 1500
+
+/* Screen-timeout cycle: ordered list of values (seconds) */
+static const int SCREEN_TIMEOUT_VALUES[] = { 0, 15, 30, 60, 120, 300 };
+static const int SCREEN_TIMEOUT_COUNT =
+    (int)(sizeof(SCREEN_TIMEOUT_VALUES) / sizeof(SCREEN_TIMEOUT_VALUES[0]));
+
+/* Human-readable label for a screen_timeout value */
+static const char *screen_timeout_label(int seconds)
+{
+    switch (seconds) {
+        case 0:   return "Off";
+        case 15:  return "15 seconds";
+        case 30:  return "30 seconds";
+        case 60:  return "1 minute";
+        case 120: return "2 minutes";
+        case 300: return "5 minutes";
+        default:  return "Off";
+    }
+}
+
+/* Return the cycle index for the current timeout value (0 if not found) */
+static int screen_timeout_index(int seconds)
+{
+    for (int i = 0; i < SCREEN_TIMEOUT_COUNT; i++) {
+        if (SCREEN_TIMEOUT_VALUES[i] == seconds)
+            return i;
+    }
+    return 0;
+}
 
 /* =========================================================================
  * Render helpers
@@ -90,9 +120,14 @@ static void render_settings_menu(SDL_Surface *screen, int show_setting,
 
     /* --- Selectable menu items (offset below the 2-line header) --- */
     /* Each item uses render_menu_item_pill; index offset by 2 rows to clear header */
+    char timeout_label[64];
+    snprintf(timeout_label, sizeof(timeout_label), "Screen timeout: %s",
+             screen_timeout_label(cfg->screen_timeout));
+
     const char *labels[SETTINGS_ITEM_COUNT] = {
         "Switch Server",
-        "Sign Out"
+        "Sign Out",
+        timeout_label
     };
 
     /* Adjust list_y for menu items so they appear below the header block */
@@ -267,7 +302,7 @@ AppModule module_settings_run(SDL_Surface *screen)
                     menu_selected++;
                     dirty = 1;
                 }
-            } else if (PAD_justPressed(BTN_A)) {
+            } else if (PAD_justPressed(BTN_A) || PAD_justPressed(BTN_RIGHT)) {
                 if (menu_selected == SETTINGS_ITEM_SWITCH_SERVER) {
                     /* Reset server list so it gets re-fetched */
                     server_count = 0;
@@ -276,8 +311,28 @@ AppModule module_settings_run(SDL_Surface *screen)
                     servers_loaded = false;
                     state = SETTINGS_STATE_SERVERS;
                     dirty = 1;
+                    GFX_sync();
+                    continue;
                 } else if (menu_selected == SETTINGS_ITEM_SIGN_OUT) {
                     state = SETTINGS_STATE_SIGNOUT_CONFIRM;
+                    dirty = 1;
+                    GFX_sync();
+                    continue;
+                } else if (menu_selected == SETTINGS_ITEM_SCREEN_TIMEOUT) {
+                    PlexConfig *cfg = plex_config_get_mutable();
+                    int idx = screen_timeout_index(cfg->screen_timeout);
+                    idx = (idx + 1) % SCREEN_TIMEOUT_COUNT;
+                    cfg->screen_timeout = SCREEN_TIMEOUT_VALUES[idx];
+                    plex_config_save(cfg);
+                    dirty = 1;
+                }
+            } else if (PAD_justPressed(BTN_LEFT)) {
+                if (menu_selected == SETTINGS_ITEM_SCREEN_TIMEOUT) {
+                    PlexConfig *cfg = plex_config_get_mutable();
+                    int idx = screen_timeout_index(cfg->screen_timeout);
+                    idx = (idx - 1 + SCREEN_TIMEOUT_COUNT) % SCREEN_TIMEOUT_COUNT;
+                    cfg->screen_timeout = SCREEN_TIMEOUT_VALUES[idx];
+                    plex_config_save(cfg);
                     dirty = 1;
                 }
             } else if (PAD_justPressed(BTN_B)) {
@@ -340,9 +395,13 @@ AppModule module_settings_run(SDL_Surface *screen)
                 /* Return to settings menu */
                 state = SETTINGS_STATE_MENU;
                 dirty = 1;
+                GFX_sync();
+                continue;
             } else if (PAD_justPressed(BTN_B)) {
                 state = SETTINGS_STATE_MENU;
                 dirty = 1;
+                GFX_sync();
+                continue;
             }
 
             if (dirty) {
@@ -365,9 +424,13 @@ AppModule module_settings_run(SDL_Surface *screen)
                 servers_loaded = false;
                 state = SETTINGS_STATE_SERVERS;
                 dirty = 1;
+                GFX_sync();
+                continue;
             } else if (PAD_justPressed(BTN_B)) {
                 state = SETTINGS_STATE_MENU;
                 dirty = 1;
+                GFX_sync();
+                continue;
             }
 
             if (dirty) {
@@ -394,6 +457,8 @@ AppModule module_settings_run(SDL_Surface *screen)
             } else if (PAD_justPressed(BTN_B)) {
                 state = SETTINGS_STATE_MENU;
                 dirty = 1;
+                GFX_sync();
+                continue;
             }
 
             if (dirty) {

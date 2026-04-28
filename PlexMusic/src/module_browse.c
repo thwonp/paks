@@ -383,6 +383,36 @@ static void render_browse_screen(SDL_Surface *screen,
     }
 }
 
+/*
+ * Render the "Quit PlexMusic?" confirmation dialog overlay on top of the
+ * current screen contents (call after the underlying screen has been drawn).
+ */
+static void render_quit_confirm_dialog(SDL_Surface *screen)
+{
+    int box_w = SCALE1(280);
+    int box_h = SCALE1(80);
+
+    DialogBox dlg = render_dialog_box(screen, box_w, box_h);
+
+    SDL_Surface *msg = TTF_RenderUTF8_Blended(
+        Fonts_getMedium(), "Quit PlexMusic?", COLOR_WHITE);
+    if (msg) {
+        int tx = dlg.box_x + (dlg.box_w - msg->w) / 2;
+        int ty = dlg.box_y + SCALE1(12);
+        SDL_BlitSurface(msg, NULL, screen, &(SDL_Rect){tx, ty});
+        SDL_FreeSurface(msg);
+    }
+
+    SDL_Surface *hint = TTF_RenderUTF8_Blended(
+        Fonts_getSmall(), "[A] Quit  [B] Cancel", COLOR_LIGHT_TEXT);
+    if (hint) {
+        int tx = dlg.box_x + (dlg.box_w - hint->w) / 2;
+        int ty = dlg.box_y + box_h - SCALE1(28);
+        SDL_BlitSurface(hint, NULL, screen, &(SDL_Rect){tx, ty});
+        SDL_FreeSurface(hint);
+    }
+}
+
 /* =========================================================================
  * Label callbacks
  * ========================================================================= */
@@ -560,6 +590,7 @@ AppModule module_browse_run(SDL_Surface *screen)
     /* ------------------------------------------------------------------ */
     int dirty = 1;
     int show_setting = 0;
+    bool quit_confirm_active = false;
 
     PlexConfig *mutable_cfg = plex_config_get_mutable();
     const PlexConfig *cfg   = mutable_cfg;
@@ -591,6 +622,7 @@ AppModule module_browse_run(SDL_Surface *screen)
         track_selected  = 0;
         track_scroll    = 0;
         last_art_thumb[0] = '\0';
+        quit_confirm_active = false;
     }
 
     /* ------------------------------------------------------------------ */
@@ -738,7 +770,11 @@ AppModule module_browse_run(SDL_Surface *screen)
             }
 
             /* Input */
-            if (PAD_justRepeated(BTN_UP)) {
+            if (quit_confirm_active) {
+                if (PAD_justPressed(BTN_A)) return MODULE_QUIT;
+                if (PAD_justPressed(BTN_B)) { quit_confirm_active = false; }
+                dirty = 1;  /* always re-render when dialog is active */
+            } else if (PAD_justRepeated(BTN_UP)) {
                 lib_selected = (lib_selected > 0) ? lib_selected - 1 : lib_total_items - 1;
                 dirty = 1;
             } else if (PAD_justRepeated(BTN_DOWN)) {
@@ -763,9 +799,12 @@ AppModule module_browse_run(SDL_Surface *screen)
                     plex_art_clear();
                     state = BROWSE_ARTISTS;
                     dirty = 1;
+                    GFX_sync();
+                    continue;
                 }
             } else if (PAD_justPressed(BTN_B)) {
-                return MODULE_QUIT;
+                quit_confirm_active = true;
+                dirty = 1;
             } else if (PAD_justPressed(BTN_SELECT)) {
                 /* Cancel any running load */
                 if (s_load.thread_started) {
@@ -827,7 +866,10 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      lib_get_label, &lctx,
                                      "SELECT", "QUIT");
                 /* Extra hint for offline mode toggle */
-                GFX_blitButtonGroup((char*[]){"SELECT", "OFFLINE", NULL}, 0, screen, 1);
+                GFX_blitButtonGroup((char*[]){"SELECT", "OFFLINE", NULL}, 0, screen, 0);
+                if (quit_confirm_active) {
+                    render_quit_confirm_dialog(screen);
+                }
                 GFX_flip(screen);
                 dirty = 0;
             } else {
@@ -995,6 +1037,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                 plex_art_clear();
                 state = BROWSE_LIBRARIES;
                 dirty = 1;
+                GFX_sync();
+                continue;
             } else if (PAD_justPressed(BTN_SELECT) && cfg->offline_mode) {
                 mutable_cfg->offline_mode = false;
                 plex_config_save(mutable_cfg);
@@ -1008,6 +1052,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                 plex_art_clear();
                 state = BROWSE_LIBRARIES;
                 dirty = 1;
+                GFX_sync();
+                continue;
             }
 
             /* Poll art async */
@@ -1032,7 +1078,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      artist_get_label, &actx,
                                      "SELECT", "BACK");
                 if (cfg->offline_mode)
-                    GFX_blitButtonGroup((char*[]){"SELECT", "ONLINE", NULL}, 0, screen, 1);
+                    GFX_blitButtonGroup((char*[]){"SELECT", "ONLINE", NULL}, 0, screen, 0);
                 GFX_flip(screen);
                 dirty = 0;
             } else {
@@ -1158,6 +1204,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                 plex_art_clear();
                 state = BROWSE_TRACKS;
                 dirty = 1;
+                GFX_sync();
+                continue;
             } else if (PAD_justPressed(BTN_B)) {
                 last_art_thumb[0] = '\0';
                 plex_art_clear();
@@ -1169,6 +1217,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                 }
                 state = BROWSE_ARTISTS;
                 dirty = 1;
+                GFX_sync();
+                continue;
             } else if (PAD_justPressed(BTN_Y) && !cfg->offline_mode && album_count > 0) {
                 plex_downloads_queue_album(mutable_cfg,
                     albums[album_selected].rating_key,
@@ -1201,7 +1251,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      album_get_label, &alctx,
                                      "SELECT", "BACK");
                 if (!cfg->offline_mode)
-                    GFX_blitButtonGroup((char*[]){"Y", "DOWNLOAD", NULL}, 0, screen, 1);
+                    GFX_blitButtonGroup((char*[]){"Y", "DOWNLOAD", NULL}, 0, screen, 0);
                 GFX_flip(screen);
                 dirty = 0;
             } else {
@@ -1312,6 +1362,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                 }
                 state = BROWSE_ALBUMS;
                 dirty = 1;
+                GFX_sync();
+                continue;
             }
 
             /* Poll art async */
@@ -1364,6 +1416,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                 }
                 state = net_error_from;
                 dirty = 1;
+                GFX_sync();
+                continue;
             } else if (PAD_justPressed(BTN_B)) {
                 if (net_error_back == BROWSE_LIBRARIES) {
                     return MODULE_QUIT;
@@ -1392,6 +1446,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                 }
                 state = net_error_back;
                 dirty = 1;
+                GFX_sync();
+                continue;
             }
 
             if (dirty) {

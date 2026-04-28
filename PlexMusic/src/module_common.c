@@ -137,6 +137,12 @@ GlobalInputResult ModuleCommon_handleGlobalInput(SDL_Surface* screen, int* show_
         return result;
     }
 
+    // MENU+START — immediate quit from any screen (no confirmation)
+    if (PAD_isPressed(BTN_MENU) && PAD_justPressed(BTN_START)) {
+        result.should_quit = true;
+        return result;
+    }
+
     // Handle START button - track press time for short/long press detection
     if (PAD_justPressed(BTN_START)) {
         start_press_time = SDL_GetTicks();
