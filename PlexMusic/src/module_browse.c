@@ -845,7 +845,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                 hctx.now_playing_label = now_playing_label;
                 hctx.settings_idx     = settings_idx;
 
-                render_browse_screen(screen, "Music",
+                const char *home_header = cfg->offline_mode ? "Music (Offline)" : "Music (Online)";
+                render_browse_screen(screen, home_header,
                                      lib_selected, &lib_scroll,
                                      home_item_count,
                                      NULL, NULL, NULL,
@@ -1151,15 +1152,11 @@ AppModule module_browse_run(SDL_Surface *screen)
                 }
                 /* artist_selected == artists_loaded is the "(Loading...)" sentinel — do nothing */
             } else if (PAD_justPressed(BTN_B)) {
-                if (cfg->offline_mode) {
-                    quit_confirm_active = true;
-                    dirty = 1;
-                } else {
+                {
                     /* Cancel any in-flight page load */
                     if (artists_page_loading) {
                         s_load.cancel = true;
                         artists_page_loading = false;
-                        /* old thread joined by the next browse_load_kick for BROWSE_LIBRARIES */
                     }
                     last_art_thumb[0] = '\0';
                     plex_art_clear();
