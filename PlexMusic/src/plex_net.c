@@ -101,7 +101,7 @@ static void plex_net_psa_init(void)
 #define PLEX_CLIENT_IDENTIFIER  "nextui-plex-music"
 #define PLEX_PRODUCT            "PlexMusic"
 #define PLEX_VERSION            "0.1.0"
-#define PLEX_PLATFORM           "Linux"
+#define PLEX_PLATFORM           "Chrome"
 
 /* TLS 1.3: non-fatal retryable errors */
 #define SSL_RETRYABLE(r) \

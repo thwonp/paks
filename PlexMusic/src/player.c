@@ -54,6 +54,7 @@ struct input_event_raw {
 #include "audio/minimp4.h"
 #include <fdk-aac/aacdecoder_lib.h>
 #include <opusfile.h>
+#include "plex_log.h"
 
 // M4A decoder state (uses minimp4 + FDK-AAC)
 typedef struct {
@@ -325,6 +326,19 @@ static size_t circular_buffer_read(CircularBuffer* cb, int16_t* data, size_t fra
 
 // ============ STREAMING DECODER INTERFACE ============
 
+// Opus custom I/O callbacks — allow progressive (file_growing) playback
+static int opus_read_cb(void *stream, unsigned char *ptr, int nbytes) {
+    FILE *f = (FILE *)stream;
+    while (1) {
+        int n = (int)fread(ptr, 1, nbytes, f);
+        if (n > 0) return n;
+        if (!player.file_growing) return 0;
+        clearerr(f);
+        usleep(50000);
+    }
+}
+
+
 // Open decoder and read metadata (doesn't decode audio yet)
 static int stream_decoder_open(StreamDecoder* sd, const char* filepath) {
     memset(sd, 0, sizeof(StreamDecoder));
@@ -394,18 +408,28 @@ static int stream_decoder_open(StreamDecoder* sd, const char* filepath) {
             break;
         }
         case AUDIO_FORMAT_OPUS: {
-            int error;
-            OggOpusFile* of = op_open_file(filepath, &error);
-            if (!of) {
-                LOG_error("Stream: Failed to open Opus: %s (error %d)\n", filepath, error);
+            /* Use op_fopen to get opusfile's own seek/tell callbacks (fseeko/ftello),
+             * then override read with retry logic and clear close (we own the FILE*). */
+            OpusFileCallbacks cbs;
+            FILE *f = (FILE *)op_fopen(&cbs, filepath, "rb");
+            if (!f) {
+                PLEX_LOG_ERROR("Stream: Opus op_fopen failed: %s\n", filepath);
                 return -1;
             }
-            sd->decoder = of;
+            cbs.read  = opus_read_cb;  /* retry on EOF while file is growing */
+            cbs.close = NULL;          /* we manage the FILE* lifetime ourselves */
+            int error;
+            OggOpusFile *of = op_open_callbacks(f, &cbs, NULL, 0, &error);
+            if (!of) {
+                fclose(f);
+                PLEX_LOG_ERROR("Stream: Opus op_open_callbacks error=%d path=%s\n", error, filepath);
+                return -1;
+            }
+            sd->decoder        = of;
             sd->source_sample_rate = 48000;  // Opus always decodes at 48kHz
-            /* OggOpusFile internals are opaque; FILE* not accessible — no retry support for Opus */
-            sd->file_handle = NULL;
+            sd->file_handle    = f;          // owned here; closed in stream_decoder_close
             sd->source_channels = 2;         // op_read_stereo() always outputs stereo
-            sd->total_frames = op_pcm_total(of, -1);
+            sd->total_frames   = op_pcm_total(of, -1);  // may be wrong for partial file; overridden by caller
             break;
         }
         case AUDIO_FORMAT_M4A: {
@@ -1041,6 +1065,7 @@ static void stream_decoder_close(StreamDecoder* sd) {
             break;
         case AUDIO_FORMAT_OPUS:
             op_free((OggOpusFile*)sd->decoder);
+            if (sd->file_handle) { fclose(sd->file_handle); sd->file_handle = NULL; }
             break;
         case AUDIO_FORMAT_M4A: {
             M4ADecoder* m4a = (M4ADecoder*)sd->decoder;

@@ -229,6 +229,8 @@ int plex_api_get_all_albums(const PlexConfig *cfg, int section_id,
 
         const char *rk     = json_object_get_string(item, "ratingKey");
         al->rating_key     = rk ? atoi(rk) : 0;
+        const char *prk    = json_object_get_string(item, "parentRatingKey");
+        al->artist_id      = prk ? atoi(prk) : 0;
         const char *title  = json_object_get_string(item, "title");
         const char *artist = json_object_get_string(item, "parentTitle");
         const char *thumb  = json_object_get_string(item, "thumb");
@@ -282,6 +284,8 @@ int plex_api_get_albums(const PlexConfig *cfg, int artist_rating_key,
 
         const char *rk         = json_object_get_string(item, "ratingKey");
         al->rating_key         = rk ? atoi(rk) : 0;
+        const char *prk        = json_object_get_string(item, "parentRatingKey");
+        al->artist_id          = prk ? atoi(prk) : 0;
         const char *title      = json_object_get_string(item, "title");
         const char *artist     = json_object_get_string(item, "parentTitle");
         const char *thumb      = json_object_get_string(item, "thumb");
@@ -387,17 +391,22 @@ void plex_api_get_stream_url(const PlexConfig *cfg, const PlexTrack *track,
 
 /* ------------------------------------------------------------------
  * plex_api_get_transcode_url
- * Produces: {server_url}{media_key}?X-Plex-Token={token}
- *           &audioCodec=opus&audioBitrate={kbps}
- * bitrate_kbps must be > 0.
+ * Uses /audio/:/transcode/universal/start — Plex transcodes to MP3 VBR.
+ * bitrate_kbps is accepted but ignored (server does not honour it).
  * ------------------------------------------------------------------ */
 void plex_api_get_transcode_url(const PlexConfig *cfg, const PlexTrack *track,
                                 int bitrate_kbps, char *out_url, int out_url_size)
 {
+    (void)bitrate_kbps;  /* Plex server ignores audioBitrate; param kept for ABI compat */
     if (!cfg || !track || !out_url || out_url_size <= 0) return;
     snprintf(out_url, out_url_size,
-             "%s%s?X-Plex-Token=%s&audioCodec=opus&audioBitrate=%d",
-             cfg->server_url, track->media_key, cfg->token, bitrate_kbps);
+             "%s/audio/:/transcode/universal/start"
+             "?path=%%2Flibrary%%2Fmetadata%%2F%d"
+             "&mediaIndex=0&partIndex=0&protocol=http"
+             "&copyts=1&directStreamAudio=0"
+             "&session=pm_%d"
+             "&X-Plex-Token=%s",
+             cfg->server_url, track->rating_key, track->rating_key, cfg->token);
 }
 
 /* ------------------------------------------------------------------

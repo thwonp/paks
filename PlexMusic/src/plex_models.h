@@ -43,6 +43,7 @@ typedef struct {
 
 typedef struct {
     int  rating_key;
+    int  artist_id;                     /* parentRatingKey — artist's rating key */
     char title[PLEX_MAX_STR];
     char artist[PLEX_MAX_STR];
     char year[8];

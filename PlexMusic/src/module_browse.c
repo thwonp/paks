@@ -1567,6 +1567,16 @@ AppModule module_browse_run(SDL_Surface *screen)
                 dirty = 1;
                 GFX_sync();
                 continue;
+            } else if (PAD_justPressed(BTN_Y) && !cfg->offline_mode && all_albums_loaded > 0
+                       && all_album_selected < all_albums_loaded) {
+                plex_downloads_queue_album(mutable_cfg,
+                    all_albums[all_album_selected].rating_key,
+                    all_albums[all_album_selected].title,
+                    all_albums[all_album_selected].artist_id,
+                    all_albums[all_album_selected].artist,
+                    all_albums[all_album_selected].thumb,
+                    all_albums[all_album_selected].year);
+                dirty = 1;
             }
 
             /* Poll art async */
@@ -1577,7 +1587,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 AlbumLabelCtx alctx;
                 alctx.albums      = all_albums;
                 alctx.count       = all_albums_loaded;
-                alctx.show_status = false;
+                alctx.show_status = !cfg->offline_mode;
 
                 const char *art_line1 = (all_album_selected < all_albums_loaded)
                     ? all_albums[all_album_selected].title : NULL;
@@ -1592,6 +1602,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      art_line1, art_line2, plex_art_get(),
                                      album_get_label, &alctx,
                                      "SELECT", "BACK", 1);
+                if (!cfg->offline_mode)
+                    GFX_blitButtonGroup((char*[]){"Y", "DOWNLOAD", NULL}, 0, screen, 0);
                 GFX_flip(screen);
                 dirty = 0;
             } else {

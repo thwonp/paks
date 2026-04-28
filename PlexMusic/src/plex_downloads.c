@@ -430,7 +430,7 @@ static void *download_worker(void *arg)
 
             char ext[16];
             if (dl_bitrate > 0) {
-                strncpy(ext, "opus", sizeof(ext) - 1);
+                strncpy(ext, "mp3", sizeof(ext) - 1);
                 ext[sizeof(ext) - 1] = '\0';
             } else {
                 extract_ext(t->media_key, ext, sizeof(ext));
