@@ -28,7 +28,8 @@ void plex_downloads_queue_album(const PlexConfig *cfg,
                                 const char *album_title,
                                 int artist_id,
                                 const char *artist_name,
-                                const char *thumb);
+                                const char *thumb,
+                                const char *year);
 
 /* Returns the download status for the given album rating_key. */
 DlStatus plex_downloads_album_status(int album_rating_key);
@@ -53,5 +54,11 @@ int plex_downloads_get_albums_for_artist(int artist_id,
  */
 int plex_downloads_get_tracks_for_album(int album_id,
                                         PlexTrack *out, int out_max);
+
+/*
+ * All downloaded albums, sorted by year descending (albums without a year
+ * sort to the end). Returns count of items written, capped at out_max.
+ */
+int plex_downloads_get_all_albums(PlexAlbum *out, int out_max);
 
 #endif /* PLEX_DOWNLOADS_H */

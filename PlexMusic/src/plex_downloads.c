@@ -49,6 +49,7 @@ typedef struct {
     char          album_title[PLEX_MAX_STR];
     char          artist_name[PLEX_MAX_STR];
     char          thumb[PLEX_MAX_URL];
+    char          year[8];
     ManifestTrack tracks[MANIFEST_TRACKS_MAX];
     int           track_count;
 } ManifestAlbum;
@@ -63,6 +64,7 @@ typedef struct {
     int  artist_id;
     char artist_name[PLEX_MAX_STR];
     char thumb[PLEX_MAX_URL];
+    char year[8];
 } QueueEntry;
 
 /* ------------------------------------------------------------------
@@ -197,6 +199,7 @@ static void manifest_save_locked(void)
         json_object_set_number(alb_obj, "artist_id",   (double)ma->artist_id);
         json_object_set_string(alb_obj, "artist_name", ma->artist_name);
         json_object_set_string(alb_obj, "thumb",       ma->thumb);
+        json_object_set_string(alb_obj, "year",        ma->year);
 
         JSON_Value *tracks_v = json_value_init_array();
         JSON_Array *tracks_a = json_value_get_array(tracks_v);
@@ -304,6 +307,9 @@ static void manifest_load(void)
             strncpy(ma.artist_name, s, sizeof(ma.artist_name) - 1);
         if ((s = json_object_get_string(alb_obj, "thumb")))
             strncpy(ma.thumb, s, sizeof(ma.thumb) - 1);
+        /* year: optional — old manifests without it load as empty string */
+        s = json_object_get_string(alb_obj, "year");
+        if (s) strncpy(ma.year, s, sizeof(ma.year) - 1);
 
         JSON_Array *tracks_a = json_object_get_array(alb_obj, "tracks");
         if (tracks_a) {
@@ -405,6 +411,7 @@ static void *download_worker(void *arg)
         strncpy(ma.album_title, entry.album_title, sizeof(ma.album_title) - 1);
         strncpy(ma.artist_name, entry.artist_name, sizeof(ma.artist_name) - 1);
         strncpy(ma.thumb,       entry.thumb,       sizeof(ma.thumb) - 1);
+        strncpy(ma.year,        entry.year,        sizeof(ma.year) - 1);
 
         int limit = track_count < MANIFEST_TRACKS_MAX ? track_count : MANIFEST_TRACKS_MAX;
 
@@ -532,7 +539,8 @@ void plex_downloads_queue_album(const PlexConfig *cfg,
                                 const char *album_title,
                                 int artist_id,
                                 const char *artist_name,
-                                const char *thumb)
+                                const char *thumb,
+                                const char *year)
 {
     if (!cfg) return;
 
@@ -578,6 +586,7 @@ void plex_downloads_queue_album(const PlexConfig *cfg,
     e->artist_id = artist_id;
     if (artist_name)  strncpy(e->artist_name,  artist_name,  sizeof(e->artist_name) - 1);
     if (thumb)        strncpy(e->thumb,         thumb,        sizeof(e->thumb) - 1);
+    if (year)         strncpy(e->year,          year,         sizeof(e->year) - 1);
 
     g_queue_tail  = (g_queue_tail + 1) % DL_QUEUE_MAX;
     g_queue_count++;
@@ -702,6 +711,38 @@ int plex_downloads_get_albums_for_artist(int artist_id,
     }
 
     pthread_mutex_unlock(&g_mutex);
+    return n;
+}
+
+static int cmp_album_year_desc(const void *a, const void *b)
+{
+    const PlexAlbum *pa = (const PlexAlbum *)a;
+    const PlexAlbum *pb = (const PlexAlbum *)b;
+    int ya = pa->year[0] ? atoi(pa->year) : 0;
+    int yb = pb->year[0] ? atoi(pb->year) : 0;
+    /* Descending: higher year first; albums with year 0 sort to end */
+    return yb - ya;
+}
+
+int plex_downloads_get_all_albums(PlexAlbum *out, int out_max)
+{
+    if (!out || out_max <= 0) return 0;
+
+    pthread_mutex_lock(&g_mutex);
+
+    int n = g_album_count < out_max ? g_album_count : out_max;
+    for (int i = 0; i < n; i++) {
+        memset(&out[i], 0, sizeof(out[i]));
+        out[i].rating_key = g_albums[i].album_id;
+        strncpy(out[i].title,  g_albums[i].album_title, sizeof(out[i].title) - 1);
+        strncpy(out[i].artist, g_albums[i].artist_name, sizeof(out[i].artist) - 1);
+        strncpy(out[i].thumb,  g_albums[i].thumb,       sizeof(out[i].thumb) - 1);
+        strncpy(out[i].year,   g_albums[i].year,        sizeof(out[i].year) - 1);
+    }
+
+    pthread_mutex_unlock(&g_mutex);
+
+    qsort(out, (size_t)n, sizeof(PlexAlbum), cmp_album_year_desc);
     return n;
 }
 

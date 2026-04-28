@@ -55,4 +55,14 @@ void plex_api_timeline(const PlexConfig *cfg, int rating_key,
  */
 void plex_api_scrobble(const PlexConfig *cfg, int rating_key);
 
+/*
+ * Get paginated list of all albums in a library section, sorted by year descending.
+ * offset: 0-based start. max_count: maximum items to write into albums[].
+ * page: filled with total/offset/count.
+ * Returns 0 on success, -1 on error.
+ */
+int plex_api_get_all_albums(const PlexConfig *cfg, int section_id,
+                             int offset, int max_count,
+                             PlexAlbum albums[], PlexPage *page);
+
 #endif /* PLEX_API_H */

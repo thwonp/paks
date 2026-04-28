@@ -31,6 +31,8 @@ typedef enum {
     BROWSE_TRACKS,
     BROWSE_NET_ERROR,
     BROWSE_ARTISTS_PAGE,   /* append-only artist page load; NOT a visible state */
+    BROWSE_ALL_ALBUMS,       /* flat all-albums list */
+    BROWSE_ALL_ALBUMS_PAGE,  /* append-only page load; NOT a visible state */
 } BrowseState;
 
 typedef enum {
@@ -79,6 +81,8 @@ static struct {
     int             *album_count;
     PlexTrack       *tracks;
     int             *track_count;
+    PlexPage         all_albums_page;   /* written by worker, read by main on DONE */
+    int              all_albums_offset; /* offset for BROWSE_ALL_ALBUMS_PAGE worker */
 } s_load = { .lock = PTHREAD_MUTEX_INITIALIZER };
 
 static void *browse_load_worker(void *arg)
@@ -128,6 +132,30 @@ static void *browse_load_worker(void *arg)
             }
             pthread_mutex_lock(&s_load.lock);
             s_load.artists_page = page;
+            pthread_mutex_unlock(&s_load.lock);
+            break;
+        }
+        case BROWSE_ALL_ALBUMS: {
+            PlexPage page;
+            memset(&page, 0, sizeof(page));
+            rc = plex_api_get_all_albums(&cfg, s_load.library_id, 0, PLEX_MAX_ITEMS,
+                                         s_load.albums, &page);
+            pthread_mutex_lock(&s_load.lock);
+            s_load.all_albums_page = page;
+            pthread_mutex_unlock(&s_load.lock);
+            break;
+        }
+        case BROWSE_ALL_ALBUMS_PAGE: {
+            PlexPage page;
+            memset(&page, 0, sizeof(page));
+            int offset = s_load.all_albums_offset;
+            int cap    = PLEX_MAX_ITEMS - offset;
+            if (cap > 0) {
+                rc = plex_api_get_all_albums(&cfg, s_load.library_id, offset, cap,
+                                             s_load.albums + offset, &page);
+            }
+            pthread_mutex_lock(&s_load.lock);
+            s_load.all_albums_page = page;
             pthread_mutex_unlock(&s_load.lock);
             break;
         }
@@ -432,7 +460,8 @@ static void home_get_label(int idx, char *buf, int size, void *ud)
 {
     HomeLabelCtx *ctx = ud;
     if (idx == 0) { snprintf(buf, size, "Artists"); return; }
-    if (ctx->bg_active && idx == 1) { snprintf(buf, size, "%s", ctx->now_playing_label); return; }
+    if (idx == 1) { snprintf(buf, size, "Albums"); return; }
+    if (ctx->bg_active && idx == 2) { snprintf(buf, size, "%s", ctx->now_playing_label); return; }
     snprintf(buf, size, "Settings");
 }
 
@@ -569,12 +598,24 @@ AppModule module_browse_run(SDL_Surface *screen)
     static int           album_scroll      = 0;
     static LoadState     albums_ls         = LOAD_IDLE;
 
+    /* All Albums (flat view) */
+    static PlexAlbum     all_albums[PLEX_MAX_ITEMS];
+    static int           all_albums_loaded   = 0;
+    static int           all_albums_total    = 0;
+    static LoadState     all_albums_ls       = LOAD_IDLE;
+    static int           all_album_selected  = 0;
+    static int           all_album_scroll    = 0;
+    static bool          all_albums_page_loading = false;
+
     /* Tracks */
     static PlexTrack     tracks[PLEX_MAX_ITEMS];
     static int           track_count       = 0;
     static int           track_selected    = 0;
     static int           track_scroll      = 0;
     static LoadState     tracks_ls         = LOAD_IDLE;
+
+    /* Tracks back-navigation target */
+    static BrowseState   tracks_back_state   = BROWSE_ALBUMS;
 
     /* Selected keys carried between levels */
     static int           selected_library_id       = 0;
@@ -625,6 +666,13 @@ AppModule module_browse_run(SDL_Surface *screen)
         tracks_ls       = LOAD_IDLE;
         track_selected  = 0;
         track_scroll    = 0;
+        all_albums_loaded  = 0;
+        all_albums_total   = 0;
+        all_albums_ls      = LOAD_IDLE;
+        all_album_selected = 0;
+        all_album_scroll   = 0;
+        all_albums_page_loading = false;
+        tracks_back_state  = BROWSE_ALBUMS;
         last_art_thumb[0] = '\0';
         quit_confirm_active = false;
     }
@@ -665,27 +713,13 @@ AppModule module_browse_run(SDL_Surface *screen)
          * ============================================================== */
         if (state == BROWSE_LIBRARIES) {
 
-            /* Offline mode: skip library loading, go straight to artists */
-            if (cfg->offline_mode) {
-                artists_loaded = plex_downloads_get_artists(artists, PLEX_MAX_ITEMS);
-                artists_total  = artists_loaded;
-                artists_ls     = LOAD_READY;
-                artist_selected = 0;
-                artist_scroll   = 0;
-                artists_page_loading = false;
-                state = BROWSE_ARTISTS;
-                dirty = 1;
-                GFX_sync();
-                continue;
-            }
+            /* Static home menu: Artists / Albums / [Now Playing] / Settings */
 
-            /* Static home menu: Artists / Now Playing (optional) / Settings */
-
-            /* Total visible items */
+            /* Total visible items: Artists, Albums, [Now Playing,] Settings */
             bool bg_active = (Background_getActive() == BG_MUSIC);
-            int home_item_count = bg_active ? 3 : 2;
-            int nowplaying_idx  = 1;                   /* only valid when bg_active */
-            int settings_idx    = bg_active ? 2 : 1;
+            int home_item_count = bg_active ? 4 : 3;
+            int nowplaying_idx  = 2;                   /* only valid when bg_active */
+            int settings_idx    = bg_active ? 3 : 2;
 
             /* Clamp selection in case bg state changed */
             if (lib_selected >= home_item_count)
@@ -740,9 +774,36 @@ AppModule module_browse_run(SDL_Surface *screen)
                         artists_ls      = LOAD_IDLE;
                         artist_selected = 0;
                         artist_scroll   = 0;
+                        tracks_back_state = BROWSE_ALBUMS;
                         last_art_thumb[0] = '\0';
                         plex_art_clear();
                         state = BROWSE_ARTISTS;
+                        dirty = 1;
+                        GFX_sync();
+                        continue;
+                    }
+                } else if (lib_selected == 1) {
+                    /* Albums */
+                    if (!cfg->offline_mode && cfg->library_id == 0) {
+                        /* No library saved yet — go to picker */
+                        libs_ls         = LOAD_IDLE;
+                        lib_count       = 0;
+                        lib_music_count = 0;
+                        state = BROWSE_LIBRARY_PICKER;
+                        dirty = 1;
+                        GFX_sync();
+                        continue;
+                    } else {
+                        selected_library_id = cfg->library_id;
+                        all_albums_loaded  = 0;
+                        all_albums_total   = 0;
+                        all_albums_ls      = LOAD_IDLE;
+                        all_album_selected = 0;
+                        all_album_scroll   = 0;
+                        all_albums_page_loading = false;
+                        last_art_thumb[0] = '\0';
+                        plex_art_clear();
+                        state = BROWSE_ALL_ALBUMS;
                         dirty = 1;
                         GFX_sync();
                         continue;
@@ -751,7 +812,7 @@ AppModule module_browse_run(SDL_Surface *screen)
             } else if (PAD_justPressed(BTN_B)) {
                 quit_confirm_active = true;
                 dirty = 1;
-            } else if (PAD_justPressed(BTN_SELECT)) {
+            } else if (PAD_justPressed(BTN_SELECT) && !cfg->offline_mode) {
                 /* Cancel any running load */
                 if (s_load.thread_started) {
                     s_load.cancel = true;
@@ -761,26 +822,10 @@ AppModule module_browse_run(SDL_Surface *screen)
                     s_load.status = LOAD_IDLE;
                     pthread_mutex_unlock(&s_load.lock);
                 }
-                /* Switch to offline */
+                /* Switch to offline — home menu stays; user picks Artists or Albums */
                 mutable_cfg->offline_mode = true;
                 plex_config_save(mutable_cfg);
-                /* Reset artist state so offline load fires on entry */
-                artists_loaded = 0;
-                artists_total  = 0;
-                artists_ls     = LOAD_IDLE;
-                artist_selected = 0;
-                artist_scroll   = 0;
-                artists_page_loading = false;
-                last_art_thumb[0] = '\0';
-                plex_art_clear();
-                /* Go directly to offline artists */
-                artists_loaded = plex_downloads_get_artists(artists, PLEX_MAX_ITEMS);
-                artists_total  = artists_loaded;
-                artists_ls     = LOAD_READY;
-                state = BROWSE_ARTISTS;
                 dirty = 1;
-                GFX_sync();
-                continue;
             }
 
             /* Render */
@@ -796,8 +841,9 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      NULL, NULL, NULL,
                                      home_get_label, &hctx,
                                      "SELECT", "QUIT", 0);
-                /* Extra hint for offline mode toggle */
-                GFX_blitButtonGroup((char*[]){"SELECT", "OFFLINE", NULL}, 0, screen, 0);
+                /* Extra hint for offline mode toggle — only in online mode */
+                if (!cfg->offline_mode)
+                    GFX_blitButtonGroup((char*[]){"SELECT", "OFFLINE", NULL}, 0, screen, 0);
                 if (quit_confirm_active) {
                     render_quit_confirm_dialog(screen);
                 }
@@ -1112,6 +1158,12 @@ AppModule module_browse_run(SDL_Surface *screen)
                 lib_selected    = 0;
                 lib_scroll      = 0;
                 libs_ls         = LOAD_IDLE;
+                all_albums_ls      = LOAD_IDLE;
+                all_albums_loaded  = 0;
+                all_albums_total   = 0;
+                all_album_selected = 0;
+                all_album_scroll   = 0;
+                all_albums_page_loading = false;
                 last_art_thumb[0] = '\0';
                 plex_art_clear();
                 state = BROWSE_LIBRARIES;
@@ -1257,6 +1309,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 tracks_ls      = LOAD_IDLE;
                 track_selected = 0;
                 track_scroll   = 0;
+                tracks_back_state = BROWSE_ALBUMS;
                 last_art_thumb[0] = '\0';
                 plex_art_clear();
                 state = BROWSE_TRACKS;
@@ -1276,7 +1329,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                     albums[album_selected].title,
                     artists[artist_selected].rating_key,
                     artists[artist_selected].title,
-                    albums[album_selected].thumb);
+                    albums[album_selected].thumb,
+                    albums[album_selected].year);
                 dirty = 1;
             }
 
@@ -1303,6 +1357,207 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      "SELECT", "BACK", 1);
                 if (!cfg->offline_mode)
                     GFX_blitButtonGroup((char*[]){"Y", "DOWNLOAD", NULL}, 0, screen, 0);
+                GFX_flip(screen);
+                dirty = 0;
+            } else {
+                GFX_sync();
+            }
+
+        /* ==============================================================
+         * BROWSE_ALL_ALBUMS
+         * ============================================================== */
+        } else if (state == BROWSE_ALL_ALBUMS) {
+
+            /* Kick on first entry */
+            if (all_albums_ls == LOAD_IDLE) {
+                if (cfg->offline_mode) {
+                    all_albums_loaded = plex_downloads_get_all_albums(all_albums, PLEX_MAX_ITEMS);
+                    all_albums_total  = all_albums_loaded;
+                    all_albums_ls     = LOAD_READY;
+                    if (all_albums_loaded > 0 && all_albums[0].thumb[0]) {
+                        snprintf(last_art_thumb, sizeof(last_art_thumb),
+                                 "%s", all_albums[0].thumb);
+                        plex_art_fetch(cfg, all_albums[0].thumb);
+                    }
+                    dirty = 1;
+                    GFX_sync();
+                    continue;
+                }
+                browse_load_kick(BROWSE_ALL_ALBUMS, cfg,
+                                 selected_library_id, 0, 0,
+                                 NULL, NULL, NULL, all_albums, NULL, NULL, NULL);
+                all_albums_ls = LOAD_RUNNING;
+            }
+
+            /* Poll running load */
+            if (all_albums_ls == LOAD_RUNNING) {
+                LoadState ws = browse_load_poll();
+                if (ws == LOAD_DONE || ws == LOAD_ERROR)
+                    all_albums_ls = ws;
+                else {
+                    render_loading(screen, true);
+                    if (PAD_justPressed(BTN_B)) {
+                        s_load.cancel = true;
+                        all_albums_ls = LOAD_IDLE;
+                        last_art_thumb[0] = '\0';
+                        plex_art_clear();
+                        state = BROWSE_LIBRARIES;
+                        dirty = 1;
+                    }
+                    GFX_sync();
+                    continue;
+                }
+            }
+
+            /* Collect results */
+            if (all_albums_ls == LOAD_DONE) {
+                browse_load_join();
+                all_albums_loaded = s_load.all_albums_page.count;
+                all_albums_total  = s_load.all_albums_page.total;
+                PLEX_LOG("[Browse] Got %d / %d all_albums\n", all_albums_loaded, all_albums_total);
+                if (all_albums_loaded > 0 && all_albums[0].thumb[0]) {
+                    snprintf(last_art_thumb, sizeof(last_art_thumb),
+                             "%s", all_albums[0].thumb);
+                    plex_art_fetch(cfg, all_albums[0].thumb);
+                }
+                dirty = 1;
+                all_albums_ls = LOAD_READY;
+                GFX_sync();
+                continue;
+            }
+
+            if (all_albums_ls == LOAD_ERROR) {
+                browse_load_join();
+                all_albums_ls = LOAD_IDLE;
+                net_error_from = BROWSE_ALL_ALBUMS;
+                net_error_back = BROWSE_LIBRARIES;
+                state = BROWSE_NET_ERROR;
+                dirty = 1;
+                GFX_sync();
+                continue;
+            }
+
+            /* all_albums_ls == LOAD_READY — normal input + render */
+
+            /* Collect pagination results */
+            if (all_albums_page_loading) {
+                LoadState ws = browse_load_poll();
+                if (ws == LOAD_DONE) {
+                    browse_load_join();
+                    int new_count = s_load.all_albums_page.count;
+                    all_albums_loaded += new_count;
+                    if (all_albums_loaded > PLEX_MAX_ITEMS) all_albums_loaded = PLEX_MAX_ITEMS;
+                    all_albums_total = s_load.all_albums_page.total;
+                    if (new_count == 0) all_albums_total = all_albums_loaded; /* server lied */
+                    all_albums_page_loading = false;
+                    dirty = 1;
+                } else if (ws == LOAD_ERROR) {
+                    browse_load_join();
+                    all_albums_page_loading = false;
+                    /* silent fail — user can retry by scrolling */
+                }
+            }
+
+            /* Count visible items (albums + optional "(Loading...)" sentinel) */
+            int aa_visible = all_albums_loaded + (all_albums_page_loading ? 1 : 0);
+
+            /* Trigger background page fetch when cursor nears end */
+            if (!all_albums_page_loading
+                && all_albums_loaded < all_albums_total
+                && all_albums_loaded < PLEX_MAX_ITEMS
+                && all_album_selected >= all_albums_loaded - ARTIST_PAGE_LOOKAHEAD) {
+                s_load.all_albums_offset = all_albums_loaded;
+                browse_load_kick(BROWSE_ALL_ALBUMS_PAGE, cfg,
+                                 selected_library_id, 0, 0,
+                                 NULL, NULL, NULL, all_albums, NULL, NULL, NULL);
+                all_albums_page_loading = true;
+            }
+
+            /* Input */
+            if (PAD_justRepeated(BTN_UP)) {
+                int prev = all_album_selected;
+                all_album_selected = (all_album_selected > 0) ? all_album_selected - 1
+                                                               : aa_visible - 1;
+                if (all_album_selected != prev) {
+                    if (all_album_selected < all_albums_loaded &&
+                        all_albums[all_album_selected].thumb[0] &&
+                        strcmp(all_albums[all_album_selected].thumb, last_art_thumb) != 0) {
+                        snprintf(last_art_thumb, sizeof(last_art_thumb),
+                                 "%s", all_albums[all_album_selected].thumb);
+                        plex_art_fetch(cfg, all_albums[all_album_selected].thumb);
+                    }
+                    dirty = 1;
+                }
+            } else if (PAD_justRepeated(BTN_DOWN)) {
+                int prev = all_album_selected;
+                all_album_selected = (all_album_selected < aa_visible - 1)
+                                         ? all_album_selected + 1 : 0;
+                if (all_album_selected != prev) {
+                    if (all_album_selected < all_albums_loaded &&
+                        all_albums[all_album_selected].thumb[0] &&
+                        strcmp(all_albums[all_album_selected].thumb, last_art_thumb) != 0) {
+                        snprintf(last_art_thumb, sizeof(last_art_thumb),
+                                 "%s", all_albums[all_album_selected].thumb);
+                        plex_art_fetch(cfg, all_albums[all_album_selected].thumb);
+                    }
+                    dirty = 1;
+                }
+            } else if (PAD_justPressed(BTN_A) && all_album_selected < all_albums_loaded) {
+                /* Cancel any in-flight page load before navigating away */
+                if (all_albums_page_loading) {
+                    s_load.cancel = true;
+                    all_albums_page_loading = false;
+                }
+                selected_album_rating_key = all_albums[all_album_selected].rating_key;
+                snprintf(selected_album_thumb, sizeof(selected_album_thumb),
+                         "%s", all_albums[all_album_selected].thumb);
+                tracks_ls      = LOAD_IDLE;
+                track_selected = 0;
+                track_scroll   = 0;
+                tracks_back_state = BROWSE_ALL_ALBUMS;
+                last_art_thumb[0] = '\0';
+                plex_art_clear();
+                state = BROWSE_TRACKS;
+                dirty = 1;
+                GFX_sync();
+                continue;
+            } else if (PAD_justPressed(BTN_B)) {
+                /* Cancel any in-flight page load */
+                if (all_albums_page_loading) {
+                    s_load.cancel = true;
+                    all_albums_page_loading = false;
+                }
+                last_art_thumb[0] = '\0';
+                plex_art_clear();
+                state = BROWSE_LIBRARIES;
+                dirty = 1;
+                GFX_sync();
+                continue;
+            }
+
+            /* Poll art async */
+            if (plex_art_is_fetching()) dirty = 1;
+
+            /* Render */
+            if (dirty) {
+                AlbumLabelCtx alctx;
+                alctx.albums      = all_albums;
+                alctx.count       = all_albums_loaded;
+                alctx.show_status = false;
+
+                const char *art_line1 = (all_album_selected < all_albums_loaded)
+                    ? all_albums[all_album_selected].title : NULL;
+                const char *art_line2 = (all_album_selected < all_albums_loaded &&
+                                         all_albums[all_album_selected].year[0])
+                    ? all_albums[all_album_selected].year : NULL;
+
+                const char *aa_header = cfg->offline_mode ? "Albums (Offline)" : "Albums";
+                render_browse_screen(screen, aa_header,
+                                     all_album_selected, &all_album_scroll,
+                                     aa_visible,
+                                     art_line1, art_line2, plex_art_get(),
+                                     album_get_label, &alctx,
+                                     "SELECT", "BACK", 1);
                 GFX_flip(screen);
                 dirty = 0;
             } else {
@@ -1345,12 +1600,21 @@ AppModule module_browse_run(SDL_Surface *screen)
                         tracks_ls = LOAD_IDLE;
                         last_art_thumb[0] = '\0';
                         plex_art_clear();
-                        if (album_selected < album_count && albums[album_selected].thumb[0]) {
-                            snprintf(last_art_thumb, sizeof(last_art_thumb),
-                                     "%s", albums[album_selected].thumb);
-                            plex_art_fetch(cfg, albums[album_selected].thumb);
+                        if (tracks_back_state == BROWSE_ALL_ALBUMS) {
+                            if (all_album_selected < all_albums_loaded &&
+                                all_albums[all_album_selected].thumb[0]) {
+                                snprintf(last_art_thumb, sizeof(last_art_thumb),
+                                         "%s", all_albums[all_album_selected].thumb);
+                                plex_art_fetch(cfg, all_albums[all_album_selected].thumb);
+                            }
+                        } else {
+                            if (album_selected < album_count && albums[album_selected].thumb[0]) {
+                                snprintf(last_art_thumb, sizeof(last_art_thumb),
+                                         "%s", albums[album_selected].thumb);
+                                plex_art_fetch(cfg, albums[album_selected].thumb);
+                            }
                         }
-                        state = BROWSE_ALBUMS;
+                        state = tracks_back_state;
                         dirty = 1;
                     }
                     GFX_sync();
@@ -1380,7 +1644,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 browse_load_join();
                 tracks_ls = LOAD_IDLE;
                 net_error_from = BROWSE_TRACKS;
-                net_error_back = BROWSE_ALBUMS;
+                net_error_back = tracks_back_state;
                 state = BROWSE_NET_ERROR;
                 dirty = 1;
                 GFX_sync();
@@ -1406,12 +1670,21 @@ AppModule module_browse_run(SDL_Surface *screen)
                 last_art_thumb[0] = '\0';
                 plex_art_clear();
                 /* Restore art for the currently selected album */
-                if (album_selected < album_count && albums[album_selected].thumb[0]) {
-                    snprintf(last_art_thumb, sizeof(last_art_thumb),
-                             "%s", albums[album_selected].thumb);
-                    plex_art_fetch(cfg, albums[album_selected].thumb);
+                if (tracks_back_state == BROWSE_ALL_ALBUMS) {
+                    if (all_album_selected < all_albums_loaded &&
+                        all_albums[all_album_selected].thumb[0]) {
+                        snprintf(last_art_thumb, sizeof(last_art_thumb),
+                                 "%s", all_albums[all_album_selected].thumb);
+                        plex_art_fetch(cfg, all_albums[all_album_selected].thumb);
+                    }
+                } else {
+                    if (album_selected < album_count && albums[album_selected].thumb[0]) {
+                        snprintf(last_art_thumb, sizeof(last_art_thumb),
+                                 "%s", albums[album_selected].thumb);
+                        plex_art_fetch(cfg, albums[album_selected].thumb);
+                    }
                 }
-                state = BROWSE_ALBUMS;
+                state = tracks_back_state;
                 dirty = 1;
                 GFX_sync();
                 continue;
@@ -1430,7 +1703,14 @@ AppModule module_browse_run(SDL_Surface *screen)
                 char art_line2[PLEX_MAX_STR + 8] = "";
                 /* Find album name from track info if available */
                 const char *art_line1 = (track_count > 0) ? tracks[0].album : NULL;
-                if (track_count > 0 && album_count > 0) {
+                if (tracks_back_state == BROWSE_ALL_ALBUMS) {
+                    if (all_album_selected < all_albums_loaded) {
+                        art_line1 = all_albums[all_album_selected].title;
+                        if (all_albums[all_album_selected].year[0])
+                            snprintf(art_line2, sizeof(art_line2), "%s",
+                                     all_albums[all_album_selected].year);
+                    }
+                } else if (track_count > 0 && album_count > 0) {
                     art_line1 = albums[album_selected].title;
                     if (albums[album_selected].year[0])
                         snprintf(art_line2, sizeof(art_line2), "%s",
@@ -1464,6 +1744,9 @@ AppModule module_browse_run(SDL_Surface *screen)
                     case BROWSE_ARTISTS:        artists_ls = LOAD_IDLE; break;
                     case BROWSE_ALBUMS:         albums_ls  = LOAD_IDLE; break;
                     case BROWSE_TRACKS:         tracks_ls  = LOAD_IDLE; break;
+                    case BROWSE_ALL_ALBUMS:
+                    case BROWSE_ALL_ALBUMS_PAGE:
+                        all_albums_ls = LOAD_IDLE; break;
                     default: break;
                 }
                 state = net_error_from;
