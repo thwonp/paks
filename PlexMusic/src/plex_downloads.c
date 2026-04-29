@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <stdbool.h>
+#include <time.h>
 
 #include "include/parson/parson.h"
 #include "plex_api.h"
@@ -25,6 +26,13 @@
 #define DL_QUEUE_MAX         8
 #define MANIFEST_ALBUMS_MAX  64
 #define MANIFEST_TRACKS_MAX  64   /* max tracks per album */
+
+/* URL-encoded X-Plex-Client-Profile-Extra value requesting OGG/Opus output */
+#define OPUS_PROFILE_EXTRA \
+    "add-transcode-target(replace%3Dtrue%26type%3DmusicProfile%26context%3Dstreaming" \
+    "%26protocol%3Dhttp%26container%3Dogg%26audioCodec%3Dopus)" \
+    "%2Badd-limitation(scope%3DmusicCodec%26scopeName%3Dopus%26type%3DupperBound" \
+    "%26name%3Daudio.channels%26value%3D2%26onlyTranscodes%3Dtrue%26replace%3Dtrue)"
 
 /* ------------------------------------------------------------------
  * Internal types
@@ -171,6 +179,117 @@ static void extract_ext(const char *media_key, char *out, int out_size)
     snprintf(out, out_size, "%s", dot + 1);
     char *qm = strchr(out, '?');
     if (qm) *qm = '\0';
+}
+
+/* ------------------------------------------------------------------
+ * Opus transcode helpers
+ * ------------------------------------------------------------------ */
+
+static void generate_session_id(int track_rating_key, char *out, int out_size)
+{
+    snprintf(out, out_size, "pm-%d-%ld", track_rating_key, (long)time(NULL));
+}
+
+/*
+ * Download one track via /audio/:/transcode/universal as OGG/Opus.
+ * Returns 0 on success, -1 on failure.
+ */
+static int opus_download_track(const char *server_url,
+                                const char *token,
+                                int         track_rating_key,
+                                int         bitrate_kbps,
+                                const char *local_path)
+{
+    char session_id[64];
+    generate_session_id(track_rating_key, session_id, sizeof(session_id));
+    PLEX_LOG("[Downloads] Opus session_id=%s track=%d bitrate=%d\n",
+             session_id, track_rating_key, bitrate_kbps);
+
+    /* --- Step 1: /decision --- */
+    char url[2048];
+    snprintf(url, sizeof(url),
+             "%s/audio/:/transcode/universal/decision"
+             "?path=%%2Flibrary%%2Fmetadata%%2F%d"
+             "&musicBitrate=%d"
+             "&session=%s"
+             "&directPlay=0"
+             "&X-Plex-Client-Identifier=plexmusic-nextui"
+             "&X-Plex-Session-Identifier=%s"
+             "&X-Plex-Chunked=1"
+             "&X-Plex-Client-Profile-Extra=%s"
+             "&X-Plex-Token=%s",
+             server_url, track_rating_key, bitrate_kbps,
+             session_id, session_id, OPUS_PROFILE_EXTRA, token);
+
+    static uint8_t decision_buf[16 * 1024];
+    PlexNetOptions opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.method      = PLEX_HTTP_GET;
+    opts.token       = NULL;
+    opts.timeout_sec = 30;
+
+    int dec_ret = plex_net_fetch(url, decision_buf, sizeof(decision_buf), &opts);
+    if (dec_ret < 0) {
+        PLEX_LOG_ERROR("[Downloads] /decision failed for track %d\n", track_rating_key);
+        /* Fall through — attempt /start anyway; /stop always runs */
+    } else {
+        decision_buf[dec_ret < (int)sizeof(decision_buf) ? dec_ret : (int)sizeof(decision_buf) - 1] = '\0';
+        PLEX_LOG("[Downloads] /decision response (%d bytes): %.256s\n", dec_ret, (char *)decision_buf);
+    }
+
+    /* --- Step 2: /start (stream to file) --- */
+    snprintf(url, sizeof(url),
+             "%s/audio/:/transcode/universal/start"
+             "?path=%%2Flibrary%%2Fmetadata%%2F%d"
+             "&musicBitrate=%d"
+             "&session=%s"
+             "&directPlay=0"
+             "&X-Plex-Client-Identifier=plexmusic-nextui"
+             "&X-Plex-Session-Identifier=%s"
+             "&X-Plex-Chunked=1"
+             "&X-Plex-Client-Profile-Extra=%s"
+             "&X-Plex-Token=%s",
+             server_url, track_rating_key, bitrate_kbps,
+             session_id, session_id, OPUS_PROFILE_EXTRA, token);
+
+    memset(&opts, 0, sizeof(opts));
+    opts.method      = PLEX_HTTP_GET;
+    opts.token       = NULL;
+    opts.timeout_sec = 300;
+
+    int start_ret = plex_net_download_file(url, local_path, NULL, NULL, &opts);
+    if (start_ret >= 0)
+        PLEX_LOG("[Downloads] /start downloaded %d bytes -> %s\n", start_ret, local_path);
+    else
+        PLEX_LOG_ERROR("[Downloads] /start failed for track %d (%s)\n",
+                       track_rating_key, local_path);
+
+    /* --- Step 3: /stop (always, for cleanup) --- */
+    snprintf(url, sizeof(url),
+             "%s/audio/:/transcode/universal/stop"
+             "?closeResourceSession=1"
+             "&path=%%2Flibrary%%2Fmetadata%%2F%d"
+             "&musicBitrate=%d"
+             "&session=%s"
+             "&directPlay=0"
+             "&X-Plex-Client-Identifier=plexmusic-nextui"
+             "&X-Plex-Session-Identifier=%s"
+             "&X-Plex-Chunked=1"
+             "&X-Plex-Client-Profile-Extra=%s"
+             "&X-Plex-Token=%s",
+             server_url, track_rating_key, bitrate_kbps,
+             session_id, session_id, OPUS_PROFILE_EXTRA, token);
+
+    static uint8_t stop_buf[1024];
+    memset(&opts, 0, sizeof(opts));
+    opts.method      = PLEX_HTTP_GET;
+    opts.token       = NULL;
+    opts.timeout_sec = 15;
+
+    plex_net_fetch(url, stop_buf, sizeof(stop_buf), &opts); /* fire-and-forget */
+    PLEX_LOG("[Downloads] /stop called for track %d\n", track_rating_key);
+
+    return (start_ret >= 0) ? 0 : -1;
 }
 
 /* ------------------------------------------------------------------
@@ -430,7 +549,7 @@ static void *download_worker(void *arg)
 
             char ext[16];
             if (dl_bitrate > 0) {
-                strncpy(ext, "mp3", sizeof(ext) - 1);
+                strncpy(ext, "opus", sizeof(ext) - 1);
                 ext[sizeof(ext) - 1] = '\0';
             } else {
                 extract_ext(t->media_key, ext, sizeof(ext));
@@ -440,29 +559,34 @@ static void *download_worker(void *arg)
             track_local_path(entry.album_rating_key, t->rating_key,
                              ext, local_path, sizeof(local_path));
 
-            ensure_parent_dirs(local_path);
-
-            char stream_url[PLEX_MAX_URL];
-            if (dl_bitrate > 0)
-                plex_api_get_transcode_url(&cfg, t, dl_bitrate, stream_url, sizeof(stream_url));
-            else
-                plex_api_get_stream_url(&cfg, t, stream_url, sizeof(stream_url));
-
-            PlexNetOptions opts;
-            memset(&opts, 0, sizeof(opts));
-            opts.method      = PLEX_HTTP_GET;
-            opts.token       = NULL;   /* token already embedded in URL */
-            opts.timeout_sec = 120;
-
             PLEX_LOG("[Downloads] [%d/%d] %s -> %s\n",
                      i + 1, limit, t->title, local_path);
 
-            int ret = plex_net_download_file(stream_url, local_path,
-                                             NULL, NULL, &opts);
-            if (ret < 0) {
-                PLEX_LOG_ERROR("[Downloads] Failed to download track %d (%s), skipping\n",
-                               t->rating_key, t->title);
-                continue;
+            if (dl_bitrate > 0) {
+                ensure_parent_dirs(local_path);
+                int ret = opus_download_track(entry.server_url, entry.token,
+                                              t->rating_key, dl_bitrate, local_path);
+                if (ret < 0) {
+                    PLEX_LOG_ERROR("[Downloads] Opus download failed for track %d (%s), skipping\n",
+                                   t->rating_key, t->title);
+                    continue;
+                }
+            } else {
+                /* existing direct-stream path — unchanged */
+                char stream_url[PLEX_MAX_URL];
+                plex_api_get_stream_url(&cfg, t, stream_url, sizeof(stream_url));
+                ensure_parent_dirs(local_path);
+                PlexNetOptions opts;
+                memset(&opts, 0, sizeof(opts));
+                opts.method      = PLEX_HTTP_GET;
+                opts.token       = NULL;
+                opts.timeout_sec = 120;
+                int ret = plex_net_download_file(stream_url, local_path, NULL, NULL, &opts);
+                if (ret < 0) {
+                    PLEX_LOG_ERROR("[Downloads] Failed to download track %d (%s), skipping\n",
+                                   t->rating_key, t->title);
+                    continue;
+                }
             }
 
             /* Build manifest track */
