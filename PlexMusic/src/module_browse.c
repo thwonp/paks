@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <pthread.h>
+#include <ctype.h>
 
 #include "api.h"
 #include "plex_log.h"
@@ -50,7 +51,7 @@ typedef enum {
 #define ART_PANEL_PAD SCALE1(8)
 
 /* How close the cursor must be to the end of loaded artists to trigger a page fetch */
-#define ARTIST_PAGE_LOOKAHEAD 20
+#define ARTIST_PAGE_LOOKAHEAD 45
 
 /* =========================================================================
  * Async worker
@@ -252,6 +253,16 @@ static void browse_load_join(void)
 /* =========================================================================
  * Helpers
  * ========================================================================= */
+
+static int scroll_step(Uint32 held_since)
+{
+    if (!held_since) return 1;
+    Uint32 ms = SDL_GetTicks() - held_since;
+    if (ms < 1000) return 1;
+    if (ms < 2000) return 3;
+    if (ms < 3000) return 8;
+    return 15;
+}
 
 static void format_duration(int ms, char *buf, int size)
 {
@@ -584,6 +595,9 @@ static void track_get_label(int i, char *buf, int size, void *ud)
 /* File-scope flag so module_browse_reset() can reach it. */
 static bool s_browse_initialized = false;
 
+static bool pending_r2_jump     = false; /* deferred artist letter jump */
+static bool pending_r2_jump_all = false; /* deferred all-albums year jump */
+
 /* Set by module_browse_request_library_pick(); checked on every entry. */
 static bool s_library_pick_requested = false;
 
@@ -602,6 +616,8 @@ void module_browse_reset(void)
         pthread_mutex_unlock(&s_load.lock);
     }
     s_browse_initialized = false;
+    pending_r2_jump      = false;
+    pending_r2_jump_all  = false;
 }
 
 AppModule module_browse_run(SDL_Surface *screen)
@@ -671,6 +687,10 @@ AppModule module_browse_run(SDL_Surface *screen)
     static BrowseState net_error_back  = BROWSE_LIBRARIES; /* parent to go to on B */
     static int         net_auto_retries = 0;   /* auto-kick attempts before showing error */
 
+    /* Hold-acceleration tracking */
+    static Uint32 s_hold_up_since   = 0;
+    static Uint32 s_hold_down_since = 0;
+
     /* ------------------------------------------------------------------ */
     /* Per-frame locals                                                    */
     /* ------------------------------------------------------------------ */
@@ -713,6 +733,8 @@ AppModule module_browse_run(SDL_Surface *screen)
         all_album_selected = 0;
         all_album_scroll   = 0;
         all_albums_page_loading = false;
+        pending_r2_jump     = false;
+        pending_r2_jump_all = false;
         tracks_back_state  = BROWSE_ALBUMS;
         last_art_thumb[0] = '\0';
         quit_confirm_active = false;
@@ -1161,9 +1183,33 @@ AppModule module_browse_run(SDL_Surface *screen)
                     if (new_count == 0) artists_total = artists_loaded; /* server lied */
                     artists_page_loading = false;
                     dirty = 1;
+                    if (pending_r2_jump) {
+                        if (artist_selected < artists_loaded) {
+                            char orig = toupper((unsigned char)artists[artist_selected].title_sort[0]);
+                            int i = artist_selected + 1;
+                            while (i < artists_loaded &&
+                                   toupper((unsigned char)artists[i].title_sort[0]) == orig)
+                                i++;
+                            if (i < artists_loaded) {
+                                /* Found the next letter group in the newly loaded data */
+                                artist_selected = i;
+                                pending_r2_jump = false;
+                            } else if (artists_loaded < artists_total && artists_loaded < PLEX_MAX_ITEMS) {
+                                /* Still not found; advance cursor to trigger the next lookahead page load */
+                                artist_selected = artists_loaded - 1;
+                                /* pending_r2_jump stays true — will retry when next page completes */
+                            } else {
+                                /* All pages loaded; letter doesn't exist */
+                                pending_r2_jump = false;
+                            }
+                        } else {
+                            pending_r2_jump = false;
+                        }
+                    }
                 } else if (ws == LOAD_ERROR) {
                     browse_load_join();
                     artists_page_loading = false;
+                    pending_r2_jump = false;
                     /* silent fail — user can retry by scrolling */
                 }
             }
@@ -1183,24 +1229,62 @@ AppModule module_browse_run(SDL_Surface *screen)
                 artists_page_loading = true;
             }
 
+            /* Hold-acceleration tracking */
+            if (!PAD_isPressed(BTN_UP))    s_hold_up_since   = 0;
+            if (!PAD_isPressed(BTN_DOWN))  s_hold_down_since = 0;
+            if (PAD_justPressed(BTN_UP))   s_hold_up_since   = SDL_GetTicks();
+            if (PAD_justPressed(BTN_DOWN)) s_hold_down_since = SDL_GetTicks();
+
             /* Input */
             if (quit_confirm_active) {
                 if (PAD_justPressed(BTN_A)) return MODULE_QUIT;
                 if (PAD_justPressed(BTN_B)) { quit_confirm_active = false; dirty = 1; }
             } else if (PAD_justRepeated(BTN_UP)) {
+                int step = scroll_step(s_hold_up_since);
                 int prev = artist_selected;
-                artist_selected = (artist_selected > 0) ? artist_selected - 1
-                                                         : visible_items - 1;
-                if (artist_selected != prev) {
-                    dirty = 1;
-                }
+                artist_selected = (artist_selected >= step) ? artist_selected - step : 0;
+                if (artist_selected != prev) dirty = 1;
             } else if (PAD_justRepeated(BTN_DOWN)) {
+                int step = scroll_step(s_hold_down_since);
                 int prev = artist_selected;
-                artist_selected = (artist_selected < visible_items - 1)
-                                      ? artist_selected + 1 : 0;
-                if (artist_selected != prev) {
+                int cap = visible_items - 1;
+                artist_selected = (artist_selected + step <= cap) ? artist_selected + step : cap;
+                if (artist_selected != prev) dirty = 1;
+            } else if (PAD_justRepeated(BTN_R2)) {
+                int i = artist_selected + 1;
+                while (i < artists_loaded &&
+                       toupper((unsigned char)artists[i].title_sort[0]) ==
+                       toupper((unsigned char)artists[artist_selected].title_sort[0]))
+                    i++;
+                if (i < artists_loaded) {
+                    pending_r2_jump = false;
+                    artist_selected = i;
+                    dirty = 1;
+                } else if (artists_loaded < artists_total && artists_loaded < PLEX_MAX_ITEMS) {
+                    /* Next letter is in an unloaded page */
+                    pending_r2_jump = true;
+                    if (!artists_page_loading) {
+                        /* Kick the page load directly — don't wait for lookahead */
+                        s_load.artist_offset = artists_loaded;
+                        browse_load_kick(BROWSE_ARTISTS_PAGE, cfg,
+                                         selected_library_id, 0, 0,
+                                         NULL, NULL, artists, NULL, NULL, NULL, NULL);
+                        artists_page_loading = true;
+                    }
                     dirty = 1;
                 }
+            } else if (PAD_justRepeated(BTN_L2)) {
+                char cur = toupper((unsigned char)artists[artist_selected].title_sort[0]);
+                int start = artist_selected;
+                while (start > 0 &&
+                       toupper((unsigned char)artists[start - 1].title_sort[0]) == cur)
+                    start--;
+                if (start == artist_selected && start > 0) start--;
+                cur = toupper((unsigned char)artists[start].title_sort[0]);
+                while (start > 0 &&
+                       toupper((unsigned char)artists[start - 1].title_sort[0]) == cur)
+                    start--;
+                if (start != artist_selected) { artist_selected = start; dirty = 1; }
             } else if (PAD_justPressed(BTN_A)) {
                 if (artist_selected < artists_loaded) {
                     /* Cancel any in-flight page load before navigating away */
@@ -1225,6 +1309,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                         s_load.cancel = true;
                         artists_page_loading = false;
                     }
+                    pending_r2_jump = false;
                     last_art_thumb[0] = '\0';
                     plex_art_clear();
                     lib_selected = 0;
@@ -1276,6 +1361,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      "SELECT", cfg->offline_mode ? "QUIT" : "BACK", 0);
                 if (cfg->offline_mode)
                     GFX_blitButtonGroup((char*[]){"SELECT", "ONLINE", NULL}, 0, screen, 0);
+                GFX_blitButtonGroup((char*[]){"L2", "PREV", "R2", "NEXT", NULL}, 0, screen, 0);
                 if (quit_confirm_active)
                     render_quit_confirm_dialog(screen);
                 GFX_flip(screen);
@@ -1364,11 +1450,17 @@ AppModule module_browse_run(SDL_Surface *screen)
 
             /* albums_ls == LOAD_READY — normal input + render */
 
+            /* Hold-acceleration tracking */
+            if (!PAD_isPressed(BTN_UP))    s_hold_up_since   = 0;
+            if (!PAD_isPressed(BTN_DOWN))  s_hold_down_since = 0;
+            if (PAD_justPressed(BTN_UP))   s_hold_up_since   = SDL_GetTicks();
+            if (PAD_justPressed(BTN_DOWN)) s_hold_down_since = SDL_GetTicks();
+
             /* Input */
             if (PAD_justRepeated(BTN_UP)) {
+                int step = scroll_step(s_hold_up_since);
                 int prev = album_selected;
-                album_selected = (album_selected > 0) ? album_selected - 1
-                                                       : album_count - 1;
+                album_selected = (album_selected >= step) ? album_selected - step : 0;
                 if (album_selected != prev) {
                     if (albums[album_selected].thumb[0] &&
                         strcmp(albums[album_selected].thumb, last_art_thumb) != 0) {
@@ -1379,9 +1471,10 @@ AppModule module_browse_run(SDL_Surface *screen)
                     dirty = 1;
                 }
             } else if (PAD_justRepeated(BTN_DOWN)) {
+                int step = scroll_step(s_hold_down_since);
                 int prev = album_selected;
-                album_selected = (album_selected < album_count - 1)
-                                      ? album_selected + 1 : 0;
+                int cap = album_count - 1;
+                album_selected = (album_selected + step <= cap) ? album_selected + step : cap;
                 if (album_selected != prev) {
                     if (albums[album_selected].thumb[0] &&
                         strcmp(albums[album_selected].thumb, last_art_thumb) != 0) {
@@ -1391,6 +1484,24 @@ AppModule module_browse_run(SDL_Surface *screen)
                     }
                     dirty = 1;
                 }
+            } else if (PAD_justRepeated(BTN_R2) && album_count > 0) {
+                int i = album_selected + 1;
+                while (i < album_count &&
+                       strcmp(albums[i].year, albums[album_selected].year) == 0)
+                    i++;
+                if (i < album_count) { album_selected = i; dirty = 1; }
+            } else if (PAD_justRepeated(BTN_L2) && album_count > 0) {
+                const char *cur = albums[album_selected].year;
+                int start = album_selected;
+                while (start > 0 &&
+                       strcmp(albums[start - 1].year, cur) == 0)
+                    start--;
+                if (start == album_selected && start > 0) start--;
+                cur = albums[start].year;
+                while (start > 0 &&
+                       strcmp(albums[start - 1].year, cur) == 0)
+                    start--;
+                if (start != album_selected) { album_selected = start; dirty = 1; }
             } else if (PAD_justPressed(BTN_A) && album_count > 0) {
                 selected_album_rating_key = albums[album_selected].rating_key;
                 PLEX_LOG("[Browse] Album selected: id=%d title=%s offline=%d\n",
@@ -1451,6 +1562,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      "SELECT", "BACK", 1);
                 if (!cfg->offline_mode)
                     GFX_blitButtonGroup((char*[]){"Y", "DOWNLOAD", NULL}, 0, screen, 0);
+                GFX_blitButtonGroup((char*[]){"L2", "PREV", "R2", "NEXT", NULL}, 0, screen, 0);
                 GFX_flip(screen);
                 dirty = 0;
             } else {
@@ -1553,9 +1665,33 @@ AppModule module_browse_run(SDL_Surface *screen)
                     if (new_count == 0) all_albums_total = all_albums_loaded; /* server lied */
                     all_albums_page_loading = false;
                     dirty = 1;
+                    if (pending_r2_jump_all) {
+                        if (all_album_selected < all_albums_loaded) {
+                            const char *orig_year = all_albums[all_album_selected].year;
+                            int i = all_album_selected + 1;
+                            while (i < all_albums_loaded &&
+                                   strcmp(all_albums[i].year, orig_year) == 0)
+                                i++;
+                            if (i < all_albums_loaded) {
+                                /* Found the next year group in the newly loaded data */
+                                all_album_selected = i;
+                                pending_r2_jump_all = false;
+                            } else if (all_albums_loaded < all_albums_total && all_albums_loaded < PLEX_MAX_ITEMS) {
+                                /* Still not found; advance cursor to trigger the next lookahead page load */
+                                all_album_selected = all_albums_loaded - 1;
+                                /* pending_r2_jump_all stays true — will retry when next page completes */
+                            } else {
+                                /* All pages loaded; year doesn't exist */
+                                pending_r2_jump_all = false;
+                            }
+                        } else {
+                            pending_r2_jump_all = false;
+                        }
+                    }
                 } else if (ws == LOAD_ERROR) {
                     browse_load_join();
                     all_albums_page_loading = false;
+                    pending_r2_jump_all = false;
                     /* silent fail — user can retry by scrolling */
                 }
             }
@@ -1575,11 +1711,17 @@ AppModule module_browse_run(SDL_Surface *screen)
                 all_albums_page_loading = true;
             }
 
+            /* Hold-acceleration tracking */
+            if (!PAD_isPressed(BTN_UP))    s_hold_up_since   = 0;
+            if (!PAD_isPressed(BTN_DOWN))  s_hold_down_since = 0;
+            if (PAD_justPressed(BTN_UP))   s_hold_up_since   = SDL_GetTicks();
+            if (PAD_justPressed(BTN_DOWN)) s_hold_down_since = SDL_GetTicks();
+
             /* Input */
             if (PAD_justRepeated(BTN_UP)) {
+                int step = scroll_step(s_hold_up_since);
                 int prev = all_album_selected;
-                all_album_selected = (all_album_selected > 0) ? all_album_selected - 1
-                                                               : aa_visible - 1;
+                all_album_selected = (all_album_selected >= step) ? all_album_selected - step : 0;
                 if (all_album_selected != prev) {
                     if (all_album_selected < all_albums_loaded &&
                         all_albums[all_album_selected].thumb[0] &&
@@ -1591,9 +1733,10 @@ AppModule module_browse_run(SDL_Surface *screen)
                     dirty = 1;
                 }
             } else if (PAD_justRepeated(BTN_DOWN)) {
+                int step = scroll_step(s_hold_down_since);
                 int prev = all_album_selected;
-                all_album_selected = (all_album_selected < aa_visible - 1)
-                                         ? all_album_selected + 1 : 0;
+                int cap = aa_visible - 1;
+                all_album_selected = (all_album_selected + step <= cap) ? all_album_selected + step : cap;
                 if (all_album_selected != prev) {
                     if (all_album_selected < all_albums_loaded &&
                         all_albums[all_album_selected].thumb[0] &&
@@ -1604,6 +1747,42 @@ AppModule module_browse_run(SDL_Surface *screen)
                     }
                     dirty = 1;
                 }
+            } else if (PAD_justRepeated(BTN_R2) && all_albums_loaded > 0
+                       && all_album_selected < all_albums_loaded) {
+                int i = all_album_selected + 1;
+                while (i < all_albums_loaded &&
+                       strcmp(all_albums[i].year, all_albums[all_album_selected].year) == 0)
+                    i++;
+                if (i < all_albums_loaded) {
+                    pending_r2_jump_all = false;
+                    all_album_selected = i;
+                    dirty = 1;
+                } else if (all_albums_loaded < all_albums_total && all_albums_loaded < PLEX_MAX_ITEMS) {
+                    /* Next year group is in an unloaded page */
+                    pending_r2_jump_all = true;
+                    if (!all_albums_page_loading) {
+                        /* Kick the page load directly — don't wait for lookahead */
+                        s_load.all_albums_offset = all_albums_loaded;
+                        browse_load_kick(BROWSE_ALL_ALBUMS_PAGE, cfg,
+                                         selected_library_id, 0, 0,
+                                         NULL, NULL, NULL, all_albums, NULL, NULL, NULL);
+                        all_albums_page_loading = true;
+                    }
+                    dirty = 1;
+                }
+            } else if (PAD_justRepeated(BTN_L2) && all_albums_loaded > 0
+                       && all_album_selected < all_albums_loaded) {
+                const char *cur = all_albums[all_album_selected].year;
+                int start = all_album_selected;
+                while (start > 0 &&
+                       strcmp(all_albums[start - 1].year, cur) == 0)
+                    start--;
+                if (start == all_album_selected && start > 0) start--;
+                cur = all_albums[start].year;
+                while (start > 0 &&
+                       strcmp(all_albums[start - 1].year, cur) == 0)
+                    start--;
+                if (start != all_album_selected) { all_album_selected = start; dirty = 1; }
             } else if (PAD_justPressed(BTN_A) && all_album_selected < all_albums_loaded) {
                 /* Cancel any in-flight page load before navigating away */
                 if (all_albums_page_loading) {
@@ -1629,6 +1808,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                     s_load.cancel = true;
                     all_albums_page_loading = false;
                 }
+                pending_r2_jump_all = false;
                 last_art_thumb[0] = '\0';
                 plex_art_clear();
                 state = BROWSE_LIBRARIES;
@@ -1673,6 +1853,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      "SELECT", "BACK", 1);
                 if (!cfg->offline_mode)
                     GFX_blitButtonGroup((char*[]){"Y", "DOWNLOAD", NULL}, 0, screen, 0);
+                GFX_blitButtonGroup((char*[]){"L2", "PREV", "R2", "NEXT", NULL}, 0, screen, 0);
                 GFX_flip(screen);
                 dirty = 0;
             } else {
@@ -1776,15 +1957,24 @@ AppModule module_browse_run(SDL_Surface *screen)
 
             /* tracks_ls == LOAD_READY — normal input + render */
 
+            /* Hold-acceleration tracking */
+            if (!PAD_isPressed(BTN_UP))    s_hold_up_since   = 0;
+            if (!PAD_isPressed(BTN_DOWN))  s_hold_down_since = 0;
+            if (PAD_justPressed(BTN_UP))   s_hold_up_since   = SDL_GetTicks();
+            if (PAD_justPressed(BTN_DOWN)) s_hold_down_since = SDL_GetTicks();
+
             /* Input */
             if (PAD_justRepeated(BTN_UP)) {
-                track_selected = (track_selected > 0)
-                    ? track_selected - 1 : track_count - 1;
-                dirty = 1;
+                int step = scroll_step(s_hold_up_since);
+                int prev = track_selected;
+                track_selected = (track_selected >= step) ? track_selected - step : 0;
+                if (track_selected != prev) dirty = 1;
             } else if (PAD_justRepeated(BTN_DOWN)) {
-                track_selected = (track_selected < track_count - 1)
-                    ? track_selected + 1 : 0;
-                dirty = 1;
+                int step = scroll_step(s_hold_down_since);
+                int prev = track_selected;
+                int cap = track_count - 1;
+                track_selected = (track_selected + step <= cap) ? track_selected + step : cap;
+                if (track_selected != prev) dirty = 1;
             } else if (PAD_justPressed(BTN_A) && track_count > 0) {
                 Background_setActive(BG_NONE);
                 plex_queue_set(cfg, tracks, track_count, track_selected);

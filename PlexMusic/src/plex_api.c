@@ -168,11 +168,14 @@ int plex_api_get_artists(const PlexConfig *cfg, int section_id,
         memset(a, 0, sizeof(*a));
 
         const char *rk = json_object_get_string(item, "ratingKey");
-        a->rating_key      = rk ? atoi(rk) : 0;
-        const char *title  = json_object_get_string(item, "title");
-        const char *thumb  = json_object_get_string(item, "thumb");
+        a->rating_key          = rk ? atoi(rk) : 0;
+        const char *title      = json_object_get_string(item, "title");
+        const char *title_sort = json_object_get_string(item, "titleSort");
+        const char *thumb      = json_object_get_string(item, "thumb");
 
-        if (title) strncpy(a->title, title, sizeof(a->title) - 1);
+        if (title)      strncpy(a->title,      title,      sizeof(a->title)      - 1);
+        if (title_sort) strncpy(a->title_sort, title_sort, sizeof(a->title_sort) - 1);
+        else if (title) strncpy(a->title_sort, title,      sizeof(a->title_sort) - 1);
         if (thumb) strncpy(a->thumb, thumb, sizeof(a->thumb) - 1);
 
         loaded++;

@@ -38,6 +38,7 @@ typedef struct {
 typedef struct {
     int  rating_key;
     char title[PLEX_MAX_STR];
+    char title_sort[PLEX_MAX_STR];   /* titleSort from Plex; used for L2/R2 group jumps */
     char thumb[PLEX_MAX_URL];         /* relative path for artwork */
 } PlexArtist;
 
