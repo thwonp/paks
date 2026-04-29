@@ -508,7 +508,7 @@ static void *download_worker(void *arg)
         strncpy(cfg.token,      entry.token,      sizeof(cfg.token) - 1);
 
         /* Fetch track listing */
-        PlexTrack tracks[PLEX_MAX_ITEMS];
+        PlexTrack tracks[PLEX_MAX_TRACKS];
         int       track_count = 0;
         if (plex_api_get_tracks(&cfg, entry.album_rating_key,
                                 tracks, &track_count) != 0) {

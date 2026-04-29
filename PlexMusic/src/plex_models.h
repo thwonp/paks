@@ -3,9 +3,13 @@
 
 #include <stdbool.h>
 
-#define PLEX_MAX_STR   256
-#define PLEX_MAX_URL   512
-#define PLEX_MAX_ITEMS 200   /* max items per page result */
+#define PLEX_MAX_STR         256
+#define PLEX_MAX_URL         512
+#define PLEX_MAX_ITEMS       50000  /* sanity ceiling for dynamic lists */
+#define PLEX_MAX_ARTIST_ALBUMS 500  /* static per-artist album array */
+#define PLEX_MAX_TRACKS        500  /* static per-album track array */
+#define PLEX_MAX_LIBRARIES      16  /* static library list */
+#define PLEX_MAX_OFFLINE_ITEMS 5000 /* offline artist/album array cap */
 
 typedef struct {
     char token[PLEX_MAX_STR];

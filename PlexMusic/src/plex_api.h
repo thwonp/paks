@@ -12,7 +12,7 @@ int plex_api_get_libraries(const PlexConfig *cfg, PlexLibrary libs[], int *count
 /*
  * Get paginated artists for a library section.
  * offset: 0-based start. max_count: maximum items to write into artists[];
- * pass PLEX_MAX_ITEMS for no limit on first page.
+ * pass the current buffer capacity for max_count.
  * page: filled with total/offset/count.
  * Returns 0 on success.
  */

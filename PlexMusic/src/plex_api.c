@@ -12,7 +12,7 @@
 #include "plex_log.h"
 
 /* Page size for paginated artist fetch */
-#define ARTIST_PAGE_SIZE 50
+#define ARTIST_PAGE_SIZE 150
 
 /* Opus transcode profile for streaming (Plexamp-compatible, from tshark capture) */
 #define OPUS_PROFILE_EXTRA \
@@ -94,7 +94,7 @@ int plex_api_get_libraries(const PlexConfig *cfg, PlexLibrary libs[], int *count
     }
 
     size_t total = json_array_get_count(dirs);
-    for (size_t i = 0; i < total && *count < PLEX_MAX_ITEMS; i++) {
+    for (size_t i = 0; i < total && *count < PLEX_MAX_LIBRARIES; i++) {
         JSON_Object *d = json_array_get_object(dirs, i);
         if (!d) continue;
 
@@ -287,7 +287,7 @@ int plex_api_get_albums(const PlexConfig *cfg, int artist_rating_key,
     if (!meta) { json_value_free(root); return 0; }
 
     size_t total = json_array_get_count(meta);
-    for (size_t i = 0; i < total && *count < PLEX_MAX_ITEMS; i++) {
+    for (size_t i = 0; i < total && *count < PLEX_MAX_ARTIST_ALBUMS; i++) {
         JSON_Object *item = json_array_get_object(meta, i);
         if (!item) continue;
 
@@ -343,7 +343,7 @@ int plex_api_get_tracks(const PlexConfig *cfg, int album_rating_key,
     if (!meta) { json_value_free(root); return 0; }
 
     size_t total = json_array_get_count(meta);
-    for (size_t i = 0; i < total && *count < PLEX_MAX_ITEMS; i++) {
+    for (size_t i = 0; i < total && *count < PLEX_MAX_TRACKS; i++) {
         JSON_Object *item = json_array_get_object(meta, i);
         if (!item) continue;
 
