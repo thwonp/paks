@@ -667,8 +667,9 @@ AppModule module_browse_run(SDL_Surface *screen)
     static char          last_art_thumb[PLEX_MAX_URL] = "";
 
     /* Net error state */
-    static BrowseState net_error_from = BROWSE_LIBRARIES; /* state that failed  */
-    static BrowseState net_error_back = BROWSE_LIBRARIES; /* parent to go to on B */
+    static BrowseState net_error_from  = BROWSE_LIBRARIES; /* state that failed  */
+    static BrowseState net_error_back  = BROWSE_LIBRARIES; /* parent to go to on B */
+    static int         net_auto_retries = 0;   /* auto-kick attempts before showing error */
 
     /* ------------------------------------------------------------------ */
     /* Per-frame locals                                                    */
@@ -952,6 +953,13 @@ AppModule module_browse_run(SDL_Surface *screen)
 
                 if (lib_music_count == 0) {
                     libs_ls = LOAD_IDLE;
+                    if (net_auto_retries < 3) {
+                        net_auto_retries++;
+                        dirty = 1;
+                        GFX_sync();
+                        continue;  /* ls == LOAD_IDLE -> re-kick next frame */
+                    }
+                    net_auto_retries = 0;
                     net_error_from = BROWSE_LIBRARY_PICKER;
                     net_error_back = BROWSE_LIBRARIES;
                     state = BROWSE_NET_ERROR;
@@ -982,12 +990,20 @@ AppModule module_browse_run(SDL_Surface *screen)
                 }
 
                 dirty = 1;
+                net_auto_retries = 0;
                 libs_ls = LOAD_READY;
             }
 
             if (libs_ls == LOAD_ERROR) {
                 browse_load_join();
                 libs_ls = LOAD_IDLE;
+                if (net_auto_retries < 3) {
+                    net_auto_retries++;
+                    dirty = 1;
+                    GFX_sync();
+                    continue;  /* ls == LOAD_IDLE -> re-kick next frame */
+                }
+                net_auto_retries = 0;
                 net_error_from = BROWSE_LIBRARY_PICKER;
                 net_error_back = BROWSE_LIBRARIES;
                 state = BROWSE_NET_ERROR;
@@ -1108,6 +1124,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 PLEX_LOG("[Browse] Got %d / %d artists\n", artists_loaded, artists_total);
 
                 dirty = 1;
+                net_auto_retries = 0;
                 artists_ls = LOAD_READY;
                 GFX_sync();
                 continue;
@@ -1116,6 +1133,13 @@ AppModule module_browse_run(SDL_Surface *screen)
             if (artists_ls == LOAD_ERROR) {
                 browse_load_join();
                 artists_ls = LOAD_IDLE;
+                if (net_auto_retries < 3) {
+                    net_auto_retries++;
+                    dirty = 1;
+                    GFX_sync();
+                    continue;  /* ls == LOAD_IDLE -> re-kick next frame */
+                }
+                net_auto_retries = 0;
                 net_error_from = BROWSE_ARTISTS;
                 net_error_back = BROWSE_LIBRARIES;
                 state = BROWSE_NET_ERROR;
@@ -1314,6 +1338,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                     plex_art_fetch(cfg, albums[0].thumb);
                 }
                 dirty = 1;
+                net_auto_retries = 0;
                 albums_ls = LOAD_READY;
                 GFX_sync();
                 continue;
@@ -1322,6 +1347,13 @@ AppModule module_browse_run(SDL_Surface *screen)
             if (albums_ls == LOAD_ERROR) {
                 browse_load_join();
                 albums_ls = LOAD_IDLE;
+                if (net_auto_retries < 3) {
+                    net_auto_retries++;
+                    dirty = 1;
+                    GFX_sync();
+                    continue;  /* ls == LOAD_IDLE -> re-kick next frame */
+                }
+                net_auto_retries = 0;
                 net_error_from = BROWSE_ALBUMS;
                 net_error_back = BROWSE_ARTISTS;
                 state = BROWSE_NET_ERROR;
@@ -1483,6 +1515,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                     plex_art_fetch(cfg, all_albums[0].thumb);
                 }
                 dirty = 1;
+                net_auto_retries = 0;
                 all_albums_ls = LOAD_READY;
                 GFX_sync();
                 continue;
@@ -1491,6 +1524,13 @@ AppModule module_browse_run(SDL_Surface *screen)
             if (all_albums_ls == LOAD_ERROR) {
                 browse_load_join();
                 all_albums_ls = LOAD_IDLE;
+                if (net_auto_retries < 3) {
+                    net_auto_retries++;
+                    dirty = 1;
+                    GFX_sync();
+                    continue;  /* ls == LOAD_IDLE -> re-kick next frame */
+                }
+                net_auto_retries = 0;
                 net_error_from = BROWSE_ALL_ALBUMS;
                 net_error_back = BROWSE_LIBRARIES;
                 state = BROWSE_NET_ERROR;
@@ -1710,6 +1750,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                     plex_art_fetch(cfg, selected_album_thumb);
                 }
                 dirty = 1;
+                net_auto_retries = 0;
                 tracks_ls = LOAD_READY;
                 GFX_sync();
                 continue;
@@ -1718,6 +1759,13 @@ AppModule module_browse_run(SDL_Surface *screen)
             if (tracks_ls == LOAD_ERROR) {
                 browse_load_join();
                 tracks_ls = LOAD_IDLE;
+                if (net_auto_retries < 3) {
+                    net_auto_retries++;
+                    dirty = 1;
+                    GFX_sync();
+                    continue;  /* ls == LOAD_IDLE -> re-kick next frame */
+                }
+                net_auto_retries = 0;
                 net_error_from = BROWSE_TRACKS;
                 net_error_back = tracks_back_state;
                 state = BROWSE_NET_ERROR;

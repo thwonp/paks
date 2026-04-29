@@ -34,9 +34,31 @@ static int tcp_connect_timeout(const char *host, const char *port_str, int timeo
     hints.ai_socktype = SOCK_STREAM;
 
     if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res) {
-        if (res) freeaddrinfo(res);
+        if (res) { freeaddrinfo(res); res = NULL; }
         PLEX_LOG_ERROR("[PlexNet] DNS lookup failed: %s\n", host);
-        return -1;
+
+        /* plex.direct fallback: hostname encodes IP as A-B-C-D.hash.plex.direct */
+        int a, b, c, d;
+        char rest[128];
+        if (sscanf(host, "%d-%d-%d-%d.%127s", &a, &b, &c, &d, rest) == 5 &&
+            (unsigned)a <= 255 && (unsigned)b <= 255 &&
+            (unsigned)c <= 255 && (unsigned)d <= 255) {
+            const char *pd = strstr(rest, ".plex.direct");
+            if (pd && pd[12] == '\0') {
+                char ip_str[20];
+                snprintf(ip_str, sizeof(ip_str), "%d.%d.%d.%d", a, b, c, d);
+                PLEX_LOG("[PlexNet] plex.direct IP bypass: %s -> %s\n", host, ip_str);
+                if (getaddrinfo(ip_str, port_str, &hints, &res) != 0 || !res) {
+                    if (res) freeaddrinfo(res);
+                    return -1;
+                }
+                /* fall through to connect using res; TLS still uses original host for SNI */
+            } else {
+                return -1;
+            }
+        } else {
+            return -1;
+        }
     }
 
     int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
@@ -398,8 +420,8 @@ int plex_net_fetch(const char *url, uint8_t *buffer, int buffer_size,
                    const PlexNetOptions *opts)
 {
     int r = plex_net_fetch_internal(url, buffer, buffer_size, opts, 0);
-    if (r < 0) {
-        usleep(1000000);   /* 1 s pause — lets antenna reconnect */
+    for (int i = 0; i < 2 && r < 0; i++) {
+        usleep(1000000);
         r = plex_net_fetch_internal(url, buffer, buffer_size, opts, 0);
     }
     return r;
@@ -1013,7 +1035,7 @@ int plex_net_download_file(const char *url, const char *filepath,
 {
     int r = plex_net_download_file_internal(url, filepath, progress_pct,
                                             should_cancel, opts, 0);
-    if (r < 0 && !(should_cancel && *should_cancel)) {
+    for (int i = 0; i < 2 && r < 0 && !(should_cancel && *should_cancel); i++) {
         usleep(1000000);
         r = plex_net_download_file_internal(url, filepath, progress_pct,
                                             should_cancel, opts, 0);
