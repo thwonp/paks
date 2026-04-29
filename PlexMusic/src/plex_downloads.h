@@ -1,6 +1,7 @@
 #ifndef PLEX_DOWNLOADS_H
 #define PLEX_DOWNLOADS_H
 
+#include <stdbool.h>
 #include "plex_models.h"
 #include "plex_config.h"
 
@@ -33,6 +34,16 @@ void plex_downloads_queue_album(const PlexConfig *cfg,
 
 /* Returns the download status for the given album rating_key. */
 DlStatus plex_downloads_album_status(int album_rating_key);
+
+/* Returns true if any album is currently being downloaded. */
+bool plex_downloads_is_active(void);
+
+/*
+ * If album_id is the currently-downloading album, sets *completed and *total
+ * and returns true. Otherwise returns false (caller should not use the output
+ * values). Safe to call from any thread.
+ */
+bool plex_downloads_album_progress(int album_id, int *completed, int *total);
 
 /*
  * Offline browse query functions. All return data from the in-memory manifest.

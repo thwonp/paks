@@ -526,12 +526,23 @@ static void album_get_label(int i, char *buf, int size, void *ud)
 
     if (ctx->show_status) {
         DlStatus st = plex_downloads_album_status(a->rating_key);
-        if (st == DL_STATUS_DONE)
-            snprintf(buf, size, "%s \xe2\x9c\x93", base);        /* ✓ */
-        else if (st == DL_STATUS_DOWNLOADING || st == DL_STATUS_QUEUED)
-            snprintf(buf, size, "%s \xe2\x86\x93", base);        /* ↓ */
-        else
+        if (st == DL_STATUS_DONE) {
+            /* ✓ U+2713 */
+            snprintf(buf, size, "\xe2\x9c\x93  %s", base);
+        } else if (st == DL_STATUS_DOWNLOADING) {
+            int completed, total;
+            if (plex_downloads_album_progress(a->rating_key, &completed, &total)
+                    && total > 0)
+                /* ○ U+25CB */
+                snprintf(buf, size, "\xe2\x97\x8b %d/%d  %s", completed, total, base);
+            else
+                /* ↓ fallback if progress not yet available */
+                snprintf(buf, size, "\xe2\x86\x93  %s", base);
+        } else if (st == DL_STATUS_QUEUED) {
+            snprintf(buf, size, "\xe2\x86\x93  %s", base);
+        } else {
             snprintf(buf, size, "%s", base);
+        }
     } else {
         snprintf(buf, size, "%s", base);
     }
@@ -713,6 +724,9 @@ AppModule module_browse_run(SDL_Surface *screen)
     while (1) {
         GFX_startFrame();
         PAD_poll();
+
+        /* Redraw every frame while a download is in progress */
+        if (plex_downloads_is_active()) dirty = 1;
 
         /* Global input (Start long-press → quit dialog, volume, etc.) */
         GlobalInputResult global = ModuleCommon_handleGlobalInput(screen, &show_setting, 0);

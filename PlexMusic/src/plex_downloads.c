@@ -96,7 +96,9 @@ static int        g_queue_tail  = 0;
 static int        g_queue_count = 0;
 
 /* Currently downloading album_id (-1 = none) */
-static int g_active_album_id = -1;
+static int g_active_album_id  = -1;
+static int g_active_completed = 0;
+static int g_active_total     = 0;
 
 /* ------------------------------------------------------------------
  * Path helpers
@@ -534,6 +536,11 @@ static void *download_worker(void *arg)
 
         int limit = track_count < MANIFEST_TRACKS_MAX ? track_count : MANIFEST_TRACKS_MAX;
 
+        pthread_mutex_lock(&g_mutex);
+        g_active_completed = 0;
+        g_active_total     = limit;
+        pthread_mutex_unlock(&g_mutex);
+
         /* Read download bitrate once per album (int read is atomic enough; value only
          * changes when the user saves settings on the main thread). */
         int dl_bitrate = plex_config_get_mutable()->download_bitrate_kbps;
@@ -601,12 +608,19 @@ static void *download_worker(void *arg)
             strncpy(mt.thumb,      t->thumb,     sizeof(mt.thumb) - 1);
             strncpy(mt.local_path, local_path,   sizeof(mt.local_path) - 1);
 
-            /* Update in-memory manifest and save to disk */
             pthread_mutex_lock(&g_mutex);
-
+            g_active_completed = ma.track_count + 1;  /* +1: this track is about to be committed */
+            pthread_mutex_unlock(&g_mutex);
             ma.tracks[ma.track_count++] = mt;
+        }
 
-            /* Upsert album into manifest */
+        pthread_mutex_lock(&g_mutex);
+        if (g_active_album_id == entry.album_rating_key)
+            g_active_album_id = -1;
+        g_active_completed = 0;
+        g_active_total     = 0;
+
+        if (ma.track_count > 0) {
             bool found = false;
             for (int k = 0; k < g_album_count; k++) {
                 if (g_albums[k].album_id == ma.album_id) {
@@ -617,14 +631,8 @@ static void *download_worker(void *arg)
             }
             if (!found && g_album_count < MANIFEST_ALBUMS_MAX)
                 g_albums[g_album_count++] = ma;
-
             manifest_save_locked();
-            pthread_mutex_unlock(&g_mutex);
         }
-
-        pthread_mutex_lock(&g_mutex);
-        if (g_active_album_id == entry.album_rating_key)
-            g_active_album_id = -1;
         pthread_mutex_unlock(&g_mutex);
 
         PLEX_LOG("[Downloads] Album %d done (%d/%d tracks)\n",
@@ -763,6 +771,26 @@ DlStatus plex_downloads_album_status(int album_rating_key)
 
     pthread_mutex_unlock(&g_mutex);
     return DL_STATUS_NONE;
+}
+
+bool plex_downloads_is_active(void)
+{
+    pthread_mutex_lock(&g_mutex);
+    bool active = (g_active_album_id != -1);
+    pthread_mutex_unlock(&g_mutex);
+    return active;
+}
+
+bool plex_downloads_album_progress(int album_id, int *completed, int *total)
+{
+    pthread_mutex_lock(&g_mutex);
+    bool active = (g_active_album_id == album_id);
+    if (active) {
+        *completed = g_active_completed;
+        *total     = g_active_total;
+    }
+    pthread_mutex_unlock(&g_mutex);
+    return active;
 }
 
 /* ------------------------------------------------------------------
