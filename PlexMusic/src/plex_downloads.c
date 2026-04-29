@@ -871,6 +871,7 @@ int plex_downloads_get_albums_for_artist(int artist_id,
         strncpy(out[n].title,  g_albums[i].album_title, sizeof(out[n].title) - 1);
         strncpy(out[n].artist, g_albums[i].artist_name, sizeof(out[n].artist) - 1);
         strncpy(out[n].thumb,  g_albums[i].thumb,       sizeof(out[n].thumb) - 1);
+        strncpy(out[n].year,   g_albums[i].year,        sizeof(out[n].year) - 1);
         n++;
     }
 

@@ -307,7 +307,8 @@ static void render_net_error(SDL_Surface *screen)
  * art_surface may be NULL (shows empty panel).
  */
 static void render_art_panel(SDL_Surface *screen, SDL_Surface *art,
-                              const char *title_line1, const char *title_line2)
+                              const char *title_line1, const char *title_line2,
+                              const char *title_line3)
 {
     int hw = screen->w;
     int hh = screen->h;
@@ -362,6 +363,16 @@ static void render_art_panel(SDL_Surface *screen, SDL_Surface *art,
         if (t) {
             int tx = panel_x + (panel_w - (t->w < text_max_w ? t->w : text_max_w)) / 2;
             SDL_BlitSurface(t, NULL, screen, &(SDL_Rect){tx, text_y});
+            text_y += t->h + SCALE1(4);
+            SDL_FreeSurface(t);
+        }
+    }
+    if (title_line3 && title_line3[0]) {
+        SDL_Surface *t = TTF_RenderUTF8_Blended(Fonts_getSmall(), title_line3,
+                                                  COLOR_LIGHT_TEXT);
+        if (t) {
+            int tx = panel_x + (panel_w - (t->w < text_max_w ? t->w : text_max_w)) / 2;
+            SDL_BlitSurface(t, NULL, screen, &(SDL_Rect){tx, text_y});
             SDL_FreeSurface(t);
         }
     }
@@ -376,6 +387,7 @@ static void render_browse_screen(SDL_Surface *screen,
                                   int selected, int *scroll,
                                   int total_items,
                                   const char *art_line1, const char *art_line2,
+                                  const char *art_line3,
                                   SDL_Surface *art,
                                   /* item label callback */
                                   void (*get_label)(int idx, char *buf, int size,
@@ -419,7 +431,7 @@ static void render_browse_screen(SDL_Surface *screen,
 
     /* Art panel (only for BROWSE_ALBUMS) */
     if (show_panel)
-        render_art_panel(screen, art, art_line1, art_line2);
+        render_art_panel(screen, art, art_line1, art_line2, art_line3);
 
     /* Button hints */
     if (btn_a_label && btn_b_label) {
@@ -880,7 +892,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 render_browse_screen(screen, home_header,
                                      lib_selected, &lib_scroll,
                                      home_item_count,
-                                     NULL, NULL, NULL,
+                                     NULL, NULL, NULL, NULL,
                                      home_get_label, &hctx,
                                      "SELECT", "QUIT", 0);
                 /* Extra hint for offline mode toggle */
@@ -1034,7 +1046,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 render_browse_screen(screen, "Select Library",
                                      lib_selected, &lib_scroll,
                                      lib_music_count,
-                                     NULL, NULL, NULL,
+                                     NULL, NULL, NULL, NULL,
                                      libpick_get_label, &music_libs,
                                      "SELECT", "BACK", 0);
                 GFX_flip(screen);
@@ -1235,7 +1247,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 render_browse_screen(screen, artists_header,
                                      artist_selected, &artist_scroll,
                                      visible_items,
-                                     art_line1, NULL, plex_art_get(),
+                                     art_line1, NULL, NULL, plex_art_get(),
                                      artist_get_label, &actx,
                                      "SELECT", cfg->offline_mode ? "QUIT" : "BACK", 0);
                 if (cfg->offline_mode)
@@ -1392,15 +1404,17 @@ AppModule module_browse_run(SDL_Surface *screen)
                 alctx.count        = album_count;
                 alctx.show_status  = !cfg->offline_mode;
 
-                const char *art_line1 = (album_count > 0)
+                const char *art_line1 = (album_count > 0 && albums[album_selected].artist[0])
+                    ? albums[album_selected].artist : NULL;
+                const char *art_line2 = (album_count > 0)
                     ? albums[album_selected].title : NULL;
-                const char *art_line2 = (album_count > 0 && albums[album_selected].year[0])
+                const char *art_line3 = (album_count > 0 && albums[album_selected].year[0])
                     ? albums[album_selected].year : NULL;
 
                 render_browse_screen(screen, "Albums",
                                      album_selected, &album_scroll,
                                      album_count,
-                                     art_line1, art_line2, plex_art_get(),
+                                     art_line1, art_line2, art_line3, plex_art_get(),
                                      album_get_label, &alctx,
                                      "SELECT", "BACK", 1);
                 if (!cfg->offline_mode)
@@ -1603,17 +1617,18 @@ AppModule module_browse_run(SDL_Surface *screen)
                 alctx.count       = all_albums_loaded;
                 alctx.show_status = !cfg->offline_mode;
 
-                const char *art_line1 = (all_album_selected < all_albums_loaded)
+                const char *art_line1 = (all_album_selected < all_albums_loaded && all_albums[all_album_selected].artist[0])
+                    ? all_albums[all_album_selected].artist : NULL;
+                const char *art_line2 = (all_album_selected < all_albums_loaded)
                     ? all_albums[all_album_selected].title : NULL;
-                const char *art_line2 = (all_album_selected < all_albums_loaded &&
-                                         all_albums[all_album_selected].year[0])
+                const char *art_line3 = (all_album_selected < all_albums_loaded && all_albums[all_album_selected].year[0])
                     ? all_albums[all_album_selected].year : NULL;
 
                 const char *aa_header = cfg->offline_mode ? "Albums (Offline)" : "Albums";
                 render_browse_screen(screen, aa_header,
                                      all_album_selected, &all_album_scroll,
                                      aa_visible,
-                                     art_line1, art_line2, plex_art_get(),
+                                     art_line1, art_line2, art_line3, plex_art_get(),
                                      album_get_label, &alctx,
                                      "SELECT", "BACK", 1);
                 if (!cfg->offline_mode)
@@ -1782,6 +1797,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      track_count,
                                      art_line1,
                                      art_line2[0] ? art_line2 : NULL,
+                                     NULL,
                                      plex_art_get(),
                                      track_get_label, &tctx,
                                      "PLAY", "BACK", 0);
