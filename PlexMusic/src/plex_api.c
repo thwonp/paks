@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "include/parson/parson.h"
 #include "api.h"
@@ -12,6 +13,14 @@
 
 /* Page size for paginated artist fetch */
 #define ARTIST_PAGE_SIZE 50
+
+/* Opus transcode profile for streaming (Plexamp-compatible, from tshark capture) */
+#define OPUS_PROFILE_EXTRA \
+    "add-transcode-target(replace%3Dtrue%26type%3DmusicProfile%26context%3Dstreaming" \
+    "%26protocol%3Dhttp%26container%3Dogg%26audioCodec%3Dopus)" \
+    "%2Badd-limitation(scope%3DmusicCodec%26scopeName%3DOpus%26type%3DupperBound" \
+    "%26name%3Daudio.channels%26value%3D2%26onlyTranscodes%3Dtrue%26replace%3Dtrue)"
+
 /* Response buffer: 2 MB to handle large artist listings with rich metadata */
 #define RESP_BUF_SIZE (2 * 1024 * 1024)
 
@@ -391,22 +400,34 @@ void plex_api_get_stream_url(const PlexConfig *cfg, const PlexTrack *track,
 
 /* ------------------------------------------------------------------
  * plex_api_get_transcode_url
- * Uses /audio/:/transcode/universal/start — Plex transcodes to MP3 VBR.
- * bitrate_kbps is accepted but ignored (server does not honour it).
+ * Uses /audio/:/transcode/universal/start — Plex transcodes to Opus/Ogg.
+ * Matches the Plexamp streaming endpoint (no /decision step required).
  * ------------------------------------------------------------------ */
 void plex_api_get_transcode_url(const PlexConfig *cfg, const PlexTrack *track,
                                 int bitrate_kbps, char *out_url, int out_url_size)
 {
-    (void)bitrate_kbps;  /* Plex server ignores audioBitrate; param kept for ABI compat */
     if (!cfg || !track || !out_url || out_url_size <= 0) return;
-    snprintf(out_url, out_url_size,
+
+    char session_id[64];
+    snprintf(session_id, sizeof(session_id),
+             "pm-%d-%ld", track->rating_key, (long)time(NULL));
+
+    char url[2048];
+    snprintf(url, sizeof(url),
              "%s/audio/:/transcode/universal/start"
-             "?path=%%2Flibrary%%2Fmetadata%%2F%d"
-             "&mediaIndex=0&partIndex=0&protocol=http"
-             "&copyts=1&directStreamAudio=0"
-             "&session=pm_%d"
+             "?directPlay=0"
+             "&musicBitrate=%d"
+             "&path=%%2Flibrary%%2Fmetadata%%2F%d"
+             "&session=%s"
+             "&X-Plex-Chunked=1"
+             "&X-Plex-Client-Identifier=plexmusic-nextui"
+             "&X-Plex-Client-Profile-Extra=%s"
+             "&X-Plex-Session-Identifier=%s"
              "&X-Plex-Token=%s",
-             cfg->server_url, track->rating_key, track->rating_key, cfg->token);
+             cfg->server_url, bitrate_kbps, track->rating_key,
+             session_id, OPUS_PROFILE_EXTRA, session_id, cfg->token);
+
+    snprintf(out_url, out_url_size, "%s", url);
 }
 
 /* ------------------------------------------------------------------

@@ -117,7 +117,7 @@ static void fire_scrobble(const PlexConfig *cfg, int rating_key,
  * ------------------------------------------------------------------ */
 
 typedef struct {
-    char              url[PLEX_MAX_URL];
+    char              url[2048];
     char              filepath[768];
     volatile int      progress_pct;
     volatile bool     download_done;
@@ -413,7 +413,7 @@ static void load_next_track(PlexQueue *queue, bool *is_local_file,
         ext[0] = '\0';
     } else {
         if (transcode)
-            strncpy(ext, "mp3", ext_size - 1);
+            strncpy(ext, "opus", ext_size - 1);
         else
             extract_ext(queue->tracks[queue->current_index].media_key, ext, ext_size);
         ext[ext_size - 1] = '\0';
@@ -465,7 +465,7 @@ AppModule module_player_run(SDL_Surface *screen)
         ext[0] = '\0';
     } else {
         if (cfg->stream_bitrate_kbps > 0)
-            strncpy(ext, "mp3", sizeof(ext) - 1);
+            strncpy(ext, "opus", sizeof(ext) - 1);
         else
             extract_ext(queue->tracks[queue->current_index].media_key, ext, sizeof(ext));
         ext[sizeof(ext) - 1] = '\0';
@@ -797,7 +797,7 @@ AppModule module_player_run(SDL_Surface *screen)
                         ext[0] = '\0';
                     } else {
                         if (cfg->stream_bitrate_kbps > 0)
-                            strncpy(ext, "mp3", sizeof(ext) - 1);
+                            strncpy(ext, "opus", sizeof(ext) - 1);
                         else
                             extract_ext(queue->tracks[queue->current_index].media_key,
                                         ext, sizeof(ext));
@@ -860,7 +860,7 @@ AppModule module_player_run(SDL_Surface *screen)
                         ext[0] = '\0';
                     } else {
                         if (cfg->stream_bitrate_kbps > 0)
-                            strncpy(ext, "mp3", sizeof(ext) - 1);
+                            strncpy(ext, "opus", sizeof(ext) - 1);
                         else
                             extract_ext(queue->tracks[queue->current_index].media_key,
                                         ext, sizeof(ext));
@@ -933,7 +933,7 @@ AppModule module_player_run(SDL_Surface *screen)
                     }
                 } else {
                     if (cfg->stream_bitrate_kbps > 0)
-                        strncpy(ext, "mp3", sizeof(ext) - 1);
+                        strncpy(ext, "opus", sizeof(ext) - 1);
                     else
                         extract_ext(queue->tracks[queue->current_index].media_key,
                                     ext, sizeof(ext));

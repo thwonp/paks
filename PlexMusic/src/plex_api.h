@@ -36,14 +36,16 @@ int plex_api_get_tracks(const PlexConfig *cfg, int album_rating_key,
 
 /*
  * Build the full authenticated stream URL for a track.
- * out_url must be PLEX_MAX_URL bytes.
+ * out_url_size controls the buffer size; callers must supply a buffer large
+ * enough for the full URL (Opus transcode URLs can exceed 650 chars).
  */
 void plex_api_get_stream_url(const PlexConfig *cfg, const PlexTrack *track,
                              char *out_url, int out_url_size);
 
 /*
  * Build a Plex audio transcode URL. Appends audioCodec=opus&audioBitrate={kbps} params.
- * bitrate_kbps must be > 0. out_url must be PLEX_MAX_URL bytes.
+ * bitrate_kbps must be > 0. out_url_size controls the buffer size; callers must
+ * supply a buffer large enough for the full URL (typically 2048 bytes).
  */
 void plex_api_get_transcode_url(const PlexConfig *cfg, const PlexTrack *track,
                                 int bitrate_kbps, char *out_url, int out_url_size);

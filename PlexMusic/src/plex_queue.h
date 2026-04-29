@@ -11,7 +11,7 @@ typedef struct {
     PlexTrack tracks[PLEX_QUEUE_MAX_TRACKS];
     int count;
     int current_index;       /* 0-based index into tracks[] */
-    char stream_url[PLEX_MAX_URL]; /* authenticated stream URL for current_index */
+    char stream_url[2048]; /* authenticated stream URL for current_index */
     bool active;             /* true if queue has been populated */
 } PlexQueue;
 
