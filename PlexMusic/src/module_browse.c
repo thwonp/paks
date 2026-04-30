@@ -890,11 +890,11 @@ AppModule module_browse_run(SDL_Surface *screen)
             if (bg_active) {
                 nowplay_idx = 0; artists_idx = 1; albums_idx = 2;
                 if (online) { fav_idx = 3; recent_idx = 4; settings_idx = 5; home_item_count = 6; }
-                else        { fav_idx = -1; recent_idx = -1; settings_idx = 3; home_item_count = 4; }
+                else        { fav_idx = 3; recent_idx = -1; settings_idx = 4; home_item_count = 5; }
             } else {
                 nowplay_idx = -1; artists_idx = 0; albums_idx = 1;
                 if (online) { fav_idx = 2; recent_idx = 3; settings_idx = 4; home_item_count = 5; }
-                else        { fav_idx = -1; recent_idx = -1; settings_idx = 2; home_item_count = 3; }
+                else        { fav_idx = 2; recent_idx = -1; settings_idx = 3; home_item_count = 4; }
             }
 
             /* Clamp selection in case bg state changed */
@@ -998,7 +998,19 @@ AppModule module_browse_run(SDL_Surface *screen)
                         continue;
                     }
                 } else if (fav_idx >= 0 && lib_selected == fav_idx) {
-                    s_fav_count   = plex_favorites_get(s_fav_tracks, PLEX_MAX_TRACKS);
+                    if (!cfg->offline_mode) {
+                        s_fav_count = plex_favorites_get(s_fav_tracks, PLEX_MAX_TRACKS);
+                    } else {
+                        /* Offline: downloaded favorites ∩ favorites.json, in-place filter */
+                        int all = plex_downloads_get_tracks_for_album(
+                                      PLEX_FAVORITES_SYNC_ALBUM_ID, s_fav_tracks, PLEX_MAX_TRACKS);
+                        int n = 0;
+                        for (int i = 0; i < all; i++) {
+                            if (plex_favorites_contains(s_fav_tracks[i].rating_key))
+                                s_fav_tracks[n++] = s_fav_tracks[i];
+                        }
+                        s_fav_count = n;
+                    }
                     fav_selected  = 0;
                     fav_scroll    = 0;
                     last_art_thumb[0] = '\0';
@@ -1008,6 +1020,11 @@ AppModule module_browse_run(SDL_Surface *screen)
                     GFX_sync();
                     continue;
                 }
+            } else if (PAD_justPressed(BTN_Y) && !cfg->offline_mode
+                       && fav_idx >= 0 && lib_selected == fav_idx) {
+                s_fav_count = plex_favorites_get(s_fav_tracks, PLEX_MAX_TRACKS);
+                plex_downloads_sync_favorites(cfg, s_fav_tracks, s_fav_count);
+                dirty = 1;
             } else if (PAD_justPressed(BTN_B)) {
                 quit_confirm_active = true;
                 dirty = 1;
@@ -1068,11 +1085,15 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      NULL, NULL, NULL, NULL,
                                      home_get_label, &hctx,
                                      "SELECT", "QUIT", 0);
-                /* Extra hint for offline mode toggle */
-                if (!cfg->offline_mode)
-                    GFX_blitButtonGroup((char*[]){"SELECT", "OFFLINE", NULL}, 0, screen, 0);
-                else
+                /* Extra hint for offline mode toggle / favorites sync */
+                if (!cfg->offline_mode) {
+                    if (fav_idx >= 0 && lib_selected == fav_idx)
+                        GFX_blitButtonGroup((char*[]){"Y", "OFFLINE SYNC", NULL}, 0, screen, 0);
+                    else
+                        GFX_blitButtonGroup((char*[]){"SELECT", "OFFLINE", NULL}, 0, screen, 0);
+                } else {
                     GFX_blitButtonGroup((char*[]){"SELECT", "ONLINE", NULL}, 0, screen, 0);
+                }
                 if (quit_confirm_active) {
                     render_quit_confirm_dialog(screen);
                 }
@@ -2481,7 +2502,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 dirty = 1;
                 GFX_sync();
                 continue;
-            } else if (PAD_justPressed(BTN_Y) && !cfg->offline_mode && track_count > 0) {
+            } else if (PAD_justPressed(BTN_Y) && track_count > 0) {
                 plex_favorites_toggle(&tracks[track_selected]);
                 dirty = 1;
             }
@@ -2572,7 +2593,18 @@ AppModule module_browse_run(SDL_Surface *screen)
                 continue;
             } else if (PAD_justPressed(BTN_Y) && s_fav_count > 0) {
                 plex_favorites_toggle(&s_fav_tracks[fav_selected]);
-                s_fav_count = plex_favorites_get(s_fav_tracks, PLEX_MAX_TRACKS);
+                if (!cfg->offline_mode) {
+                    s_fav_count = plex_favorites_get(s_fav_tracks, PLEX_MAX_TRACKS);
+                } else {
+                    int all = plex_downloads_get_tracks_for_album(
+                                  PLEX_FAVORITES_SYNC_ALBUM_ID, s_fav_tracks, PLEX_MAX_TRACKS);
+                    int n = 0;
+                    for (int i = 0; i < all; i++) {
+                        if (plex_favorites_contains(s_fav_tracks[i].rating_key))
+                            s_fav_tracks[n++] = s_fav_tracks[i];
+                    }
+                    s_fav_count = n;
+                }
                 if (fav_selected >= s_fav_count)
                     fav_selected = s_fav_count > 0 ? s_fav_count - 1 : 0;
                 fav_scroll = 0;

@@ -79,4 +79,15 @@ int plex_downloads_get_all_albums(PlexAlbum *out, int out_max);
  */
 void plex_downloads_delete_album(int album_id);
 
+/* Reserved album_id for the favorites sync manifest entry */
+#define PLEX_FAVORITES_SYNC_ALBUM_ID 0
+
+/* Initiate a bidirectional favorites sync (async, non-blocking).
+ * - Deletes files for tracks currently in the favorites album that are no
+ *   longer in favs[].
+ * - Downloads tracks in favs[] whose file does not yet exist on disk.
+ * - No-ops if a sync is already in progress. */
+void plex_downloads_sync_favorites(const PlexConfig *cfg,
+                                   const PlexTrack *favs, int fav_count);
+
 #endif /* PLEX_DOWNLOADS_H */
