@@ -32,7 +32,8 @@ typedef enum {
 #define SETTINGS_ITEM_LIBRARY          3
 #define SETTINGS_ITEM_STREAM_BITRATE   4
 #define SETTINGS_ITEM_DOWNLOAD_BITRATE 5
-#define SETTINGS_ITEM_COUNT            6
+#define SETTINGS_ITEM_POCKET_LOCK      6
+#define SETTINGS_ITEM_COUNT            7
 
 /* Milliseconds to show "Server updated." confirmation */
 #define SERVER_UPDATED_PAUSE_MS 1500
@@ -161,6 +162,11 @@ static void render_settings_menu(SDL_Surface *screen, int show_setting,
     snprintf(download_bitrate_label, sizeof(download_bitrate_label),
              "Download Quality: %s", bitrate_label(cfg->download_bitrate_kbps));
 
+    char pocket_lock_label[48];
+    snprintf(pocket_lock_label, sizeof(pocket_lock_label),
+             "Pocket Button Lock: %s",
+             cfg->pocket_lock_enabled ? "MENU+SELECT" : "Off");
+
     const char *labels[SETTINGS_ITEM_COUNT] = {
         "Switch Server",
         "Sign Out",
@@ -168,6 +174,7 @@ static void render_settings_menu(SDL_Surface *screen, int show_setting,
         library_label,
         stream_bitrate_label,
         download_bitrate_label,
+        pocket_lock_label,
     };
 
     /* Adjust list_y for menu items so they appear below the header block */
@@ -398,6 +405,11 @@ AppModule module_settings_run(SDL_Surface *screen)
                     cfg->download_bitrate_kbps = BITRATE_VALUES[idx];
                     plex_config_save(cfg);
                     dirty = 1;
+                } else if (menu_selected == SETTINGS_ITEM_POCKET_LOCK) {
+                    PlexConfig *cfg = plex_config_get_mutable();
+                    cfg->pocket_lock_enabled = !cfg->pocket_lock_enabled;
+                    plex_config_save(cfg);
+                    dirty = 1;
                 }
             } else if (PAD_justPressed(BTN_LEFT)) {
                 if (menu_selected == SETTINGS_ITEM_SCREEN_TIMEOUT) {
@@ -419,6 +431,11 @@ AppModule module_settings_run(SDL_Surface *screen)
                     int idx = bitrate_index(cfg->download_bitrate_kbps);
                     idx = (idx - 1 + BITRATE_COUNT) % BITRATE_COUNT;
                     cfg->download_bitrate_kbps = BITRATE_VALUES[idx];
+                    plex_config_save(cfg);
+                    dirty = 1;
+                } else if (menu_selected == SETTINGS_ITEM_POCKET_LOCK) {
+                    PlexConfig *cfg = plex_config_get_mutable();
+                    cfg->pocket_lock_enabled = !cfg->pocket_lock_enabled;
                     plex_config_save(cfg);
                     dirty = 1;
                 }

@@ -543,7 +543,10 @@ AppModule module_player_run(SDL_Surface *screen)
                 s_screen_sleeping = false;
                 return MODULE_QUIT;
             }
-            if (PAD_isPressed(BTN_MENU) && PAD_justPressed(BTN_SELECT)) {
+            bool woke = cfg->pocket_lock_enabled
+                ? (PAD_isPressed(BTN_MENU) && PAD_justPressed(BTN_SELECT))
+                : PAD_anyPressed();
+            if (woke) {
                 PLAT_enableBacklight(1);
                 s_screen_sleeping  = false;
                 s_last_activity_ms = SDL_GetTicks();
