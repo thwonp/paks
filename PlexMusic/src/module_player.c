@@ -545,6 +545,11 @@ AppModule module_player_run(SDL_Surface *screen)
     int dirty       = 1;
     int show_setting = 0;
 
+    bool left_armed  = false;
+    bool right_armed = false;
+    bool left_seeked  = false;
+    bool right_seeked = false;
+
     /* Sleep state init */
     s_screen_sleeping  = false;
     s_last_activity_ms = SDL_GetTicks();
@@ -797,7 +802,7 @@ AppModule module_player_run(SDL_Surface *screen)
                 if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
                 return MODULE_QUIT;
             }
-            else if (PAD_justPressed(BTN_LEFT) || PAD_justPressed(BTN_L1)) {
+            else if (PAD_justPressed(BTN_L1)) {
                 if (plex_queue_has_prev()) {
                     fire_scrobble(cfg,
                                   queue->tracks[queue->current_index].rating_key,
@@ -854,7 +859,7 @@ AppModule module_player_run(SDL_Surface *screen)
                     dirty = 1;
                 }
             }
-            else if (PAD_justPressed(BTN_RIGHT) || PAD_justPressed(BTN_R1)) {
+            else if (PAD_justPressed(BTN_R1)) {
                 if (plex_queue_has_next()) {
                     fire_scrobble(cfg,
                                   queue->tracks[queue->current_index].rating_key,
@@ -911,12 +916,146 @@ AppModule module_player_run(SDL_Surface *screen)
                     dirty = 1;
                 }
             }
-            /* Bonus: seek ±30s (Player_seek() exists in player.h) */
-            else if (PAD_justPressed(BTN_UP)) {
+
+            /* BTN_LEFT: tap = prev track, hold = seek -10 s per repeat tick */
+            if (PAD_justPressed(BTN_LEFT)) {
+                left_armed  = true;
+                left_seeked = false;
+            }
+            if (PAD_justRepeated(BTN_LEFT) && left_armed) {
+                Player_seek(Player_getPosition() - cfg->seek_interval_ms);
+                left_seeked = true;
+                dirty = 1;
+            }
+            if (PAD_justReleased(BTN_LEFT) && left_armed) {
+                if (!left_seeked) {
+                    if (plex_queue_has_prev()) {
+                        fire_scrobble(cfg,
+                                      queue->tracks[queue->current_index].rating_key,
+                                      "stopped", Player_getPosition(),
+                                      Player_getDuration(), false);
+                        Background_setActive(BG_NONE);
+
+                        bool old_is_local = s_state.is_local_file;
+                        char old_temp_path[768];
+                        strncpy(old_temp_path, s_state.temp_path, sizeof(old_temp_path) - 1);
+                        old_temp_path[sizeof(old_temp_path) - 1] = '\0';
+
+                        plex_queue_prev(cfg);
+
+                        s_state.is_local_file = (queue->tracks[queue->current_index].local_path[0] != '\0');
+                        if (s_state.is_local_file) {
+                            strncpy(s_state.temp_path,
+                                    queue->tracks[queue->current_index].local_path,
+                                    sizeof(s_state.temp_path) - 1);
+                            s_state.temp_path[sizeof(s_state.temp_path) - 1] = '\0';
+                            s_state.ext[0] = '\0';
+                        } else {
+                            if (cfg->stream_bitrate_kbps > 0)
+                                strncpy(s_state.ext, "opus", sizeof(s_state.ext) - 1);
+                            else
+                                extract_ext(queue->tracks[queue->current_index].media_key,
+                                            s_state.ext, sizeof(s_state.ext));
+                            s_state.ext[sizeof(s_state.ext) - 1] = '\0';
+                            build_temp_path(s_state.ext, s_state.temp_path, sizeof(s_state.temp_path));
+                        }
+
+                        plex_art_clear();
+                        plex_art_fetch(cfg, queue->tracks[queue->current_index].thumb);
+
+                        render_downloading(screen,
+                                           &queue->tracks[queue->current_index], 0);
+
+                        if (s_state.download_pending) {
+                            s_state.dl_ctx.should_cancel = true;
+                            Player_setFileGrowing(false);
+                            pthread_join(s_state.dl_thread, NULL);
+                            s_state.dl_thread_running = false;
+                            s_state.download_pending  = false;
+                        }
+                        Player_stop();
+                        if (!old_is_local) remove(old_temp_path);
+
+                        s_state.transcode = (cfg->stream_bitrate_kbps > 0);
+                        load_next_track(queue, &screen_state);
+                        dirty = 1;
+                    }
+                }
+                left_armed = false;
+            }
+
+            /* BTN_RIGHT: tap = next track, hold = seek +10 s per repeat tick */
+            if (PAD_justPressed(BTN_RIGHT)) {
+                right_armed  = true;
+                right_seeked = false;
+            }
+            if (PAD_justRepeated(BTN_RIGHT) && right_armed) {
+                Player_seek(Player_getPosition() + cfg->seek_interval_ms);
+                right_seeked = true;
+                dirty = 1;
+            }
+            if (PAD_justReleased(BTN_RIGHT) && right_armed) {
+                if (!right_seeked) {
+                    if (plex_queue_has_next()) {
+                        fire_scrobble(cfg,
+                                      queue->tracks[queue->current_index].rating_key,
+                                      "stopped", Player_getPosition(),
+                                      Player_getDuration(), false);
+                        Background_setActive(BG_NONE);
+
+                        bool old_is_local = s_state.is_local_file;
+                        char old_temp_path[768];
+                        strncpy(old_temp_path, s_state.temp_path, sizeof(old_temp_path) - 1);
+                        old_temp_path[sizeof(old_temp_path) - 1] = '\0';
+
+                        plex_queue_next(cfg);
+
+                        s_state.is_local_file = (queue->tracks[queue->current_index].local_path[0] != '\0');
+                        if (s_state.is_local_file) {
+                            strncpy(s_state.temp_path,
+                                    queue->tracks[queue->current_index].local_path,
+                                    sizeof(s_state.temp_path) - 1);
+                            s_state.temp_path[sizeof(s_state.temp_path) - 1] = '\0';
+                            s_state.ext[0] = '\0';
+                        } else {
+                            if (cfg->stream_bitrate_kbps > 0)
+                                strncpy(s_state.ext, "opus", sizeof(s_state.ext) - 1);
+                            else
+                                extract_ext(queue->tracks[queue->current_index].media_key,
+                                            s_state.ext, sizeof(s_state.ext));
+                            s_state.ext[sizeof(s_state.ext) - 1] = '\0';
+                            build_temp_path(s_state.ext, s_state.temp_path, sizeof(s_state.temp_path));
+                        }
+
+                        plex_art_clear();
+                        plex_art_fetch(cfg, queue->tracks[queue->current_index].thumb);
+
+                        render_downloading(screen,
+                                           &queue->tracks[queue->current_index], 0);
+
+                        if (s_state.download_pending) {
+                            s_state.dl_ctx.should_cancel = true;
+                            Player_setFileGrowing(false);
+                            pthread_join(s_state.dl_thread, NULL);
+                            s_state.dl_thread_running = false;
+                            s_state.download_pending  = false;
+                        }
+                        Player_stop();
+                        if (!old_is_local) remove(old_temp_path);
+
+                        s_state.transcode = (cfg->stream_bitrate_kbps > 0);
+                        load_next_track(queue, &screen_state);
+                        dirty = 1;
+                    }
+                }
+                right_armed = false;
+            }
+            /* Seek ±30s */
+            if (PAD_justPressed(BTN_UP)) {
                 Player_seek(Player_getPosition() + 30000);
                 dirty = 1;
             }
-            else if (PAD_justPressed(BTN_DOWN)) {
+            if (PAD_justPressed(BTN_DOWN)) {
                 Player_seek(Player_getPosition() - 30000);
                 dirty = 1;
             }
