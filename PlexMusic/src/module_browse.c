@@ -1757,6 +1757,12 @@ AppModule module_browse_run(SDL_Surface *screen)
                             if (i < all_albums_loaded) {
                                 /* Found the next year group in the newly loaded data */
                                 all_album_selected = i;
+                                if (s_all_albums[all_album_selected].thumb[0] &&
+                                    strcmp(s_all_albums[all_album_selected].thumb, last_art_thumb) != 0) {
+                                    snprintf(last_art_thumb, sizeof(last_art_thumb),
+                                             "%s", s_all_albums[all_album_selected].thumb);
+                                    plex_art_fetch(cfg, s_all_albums[all_album_selected].thumb);
+                                }
                                 pending_r2_jump_all = false;
                             } else if (all_albums_loaded < all_albums_total && all_albums_loaded < s_all_albums_cap) {
                                 /* Still not found; advance cursor to trigger the next lookahead page load */
@@ -1849,6 +1855,12 @@ AppModule module_browse_run(SDL_Surface *screen)
                 if (i < all_albums_loaded) {
                     pending_r2_jump_all = false;
                     all_album_selected = i;
+                    if (s_all_albums[all_album_selected].thumb[0] &&
+                        strcmp(s_all_albums[all_album_selected].thumb, last_art_thumb) != 0) {
+                        snprintf(last_art_thumb, sizeof(last_art_thumb),
+                                 "%s", s_all_albums[all_album_selected].thumb);
+                        plex_art_fetch(cfg, s_all_albums[all_album_selected].thumb);
+                    }
                     dirty = 1;
                 } else if (all_albums_loaded < all_albums_total && all_albums_loaded < s_all_albums_cap) {
                     /* Next year group is in an unloaded page */
@@ -1876,7 +1888,16 @@ AppModule module_browse_run(SDL_Surface *screen)
                 while (start > 0 &&
                        strcmp(s_all_albums[start - 1].year, cur) == 0)
                     start--;
-                if (start != all_album_selected) { all_album_selected = start; dirty = 1; }
+                if (start != all_album_selected) {
+                    all_album_selected = start;
+                    if (s_all_albums[all_album_selected].thumb[0] &&
+                        strcmp(s_all_albums[all_album_selected].thumb, last_art_thumb) != 0) {
+                        snprintf(last_art_thumb, sizeof(last_art_thumb),
+                                 "%s", s_all_albums[all_album_selected].thumb);
+                        plex_art_fetch(cfg, s_all_albums[all_album_selected].thumb);
+                    }
+                    dirty = 1;
+                }
             } else if (PAD_justPressed(BTN_A) && all_album_selected < all_albums_loaded) {
                 /* Cancel any in-flight page load before navigating away */
                 if (all_albums_page_loading) {
