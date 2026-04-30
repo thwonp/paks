@@ -74,4 +74,12 @@ int plex_api_get_all_albums(const PlexConfig *cfg, int section_id,
                              int offset, int max_count,
                              PlexAlbum albums[], PlexPage *page);
 
+/*
+ * Get a flat list of recently added albums, sorted by addedAt descending.
+ * max_count: maximum items to write into albums[]; *count set on return.
+ * Returns 0 on success, -1 on error.
+ */
+int plex_api_get_recent_albums(const PlexConfig *cfg, int section_id,
+                                int max_count, PlexAlbum albums[], int *count);
+
 #endif /* PLEX_API_H */

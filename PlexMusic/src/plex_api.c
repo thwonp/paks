@@ -270,6 +270,80 @@ int plex_api_get_all_albums(const PlexConfig *cfg, int section_id,
 }
 
 /* ------------------------------------------------------------------
+ * plex_api_get_recent_albums
+ * GET {server_url}/library/sections/{section_id}/all
+ *     ?type=9&sort=addedAt:desc
+ *     &X-Plex-Container-Start=0&X-Plex-Container-Size={max_count}
+ * Single fetch — no pagination. *count set to number loaded.
+ * ------------------------------------------------------------------ */
+int plex_api_get_recent_albums(const PlexConfig *cfg, int section_id,
+                                int max_count, PlexAlbum albums[], int *count)
+{
+    if (!cfg || !albums || !count) return -1;
+    *count = 0;
+
+    if (max_count <= 0) return 0;
+
+    int page_size = max_count < ARTIST_PAGE_SIZE ? max_count : ARTIST_PAGE_SIZE;
+
+    char path[512];
+    snprintf(path, sizeof(path),
+             "/library/sections/%d/all"
+             "?type=9"
+             "&sort=addedAt:desc"
+             "&X-Plex-Container-Start=0"
+             "&X-Plex-Container-Size=%d"
+             "&excludeElements=Media,Director,Country"
+             "&excludeFields=summary",
+             section_id, page_size);
+
+    JSON_Value *root = server_get(cfg, path);
+    if (!root) return -1;
+
+    JSON_Object *mc = json_object_dotget_object(
+                         json_value_get_object(root), "MediaContainer");
+    if (!mc) { json_value_free(root); return -1; }
+
+    JSON_Array *meta = json_object_get_array(mc, "Metadata");
+    if (!meta) {
+        json_value_free(root);
+        return 0;   /* empty result is not an error */
+    }
+
+    size_t n = (size_t)json_array_get_count(meta);
+    int loaded = 0;
+
+    for (size_t i = 0; i < n && loaded < max_count; i++) {
+        JSON_Object *item = json_array_get_object(meta, i);
+        if (!item) continue;
+
+        PlexAlbum *al = &albums[loaded];
+        memset(al, 0, sizeof(*al));
+
+        const char *rk     = json_object_get_string(item, "ratingKey");
+        al->rating_key     = rk ? atoi(rk) : 0;
+        const char *prk    = json_object_get_string(item, "parentRatingKey");
+        al->artist_id      = prk ? atoi(prk) : 0;
+        const char *title  = json_object_get_string(item, "title");
+        const char *artist = json_object_get_string(item, "parentTitle");
+        const char *thumb  = json_object_get_string(item, "thumb");
+        double year_d      = json_object_get_number(item, "year");
+
+        if (title)  strncpy(al->title,  title,  sizeof(al->title) - 1);
+        if (artist) strncpy(al->artist, artist, sizeof(al->artist) - 1);
+        if (thumb)  strncpy(al->thumb,  thumb,  sizeof(al->thumb) - 1);
+        if (year_d > 0)
+            snprintf(al->year, sizeof(al->year), "%d", (int)year_d);
+
+        loaded++;
+    }
+
+    *count = loaded;
+    json_value_free(root);
+    return 0;
+}
+
+/* ------------------------------------------------------------------
  * plex_api_get_albums
  * GET {server_url}/library/metadata/{artist_rating_key}/children
  * Response: MediaContainer.Metadata[]
