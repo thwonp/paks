@@ -922,7 +922,7 @@ AppModule module_player_run(SDL_Surface *screen)
                 left_armed  = true;
                 left_seeked = false;
             }
-            if (PAD_justRepeated(BTN_LEFT) && left_armed) {
+            if (PAD_justRepeated(BTN_LEFT) && left_armed && !PAD_justPressed(BTN_LEFT)) {
                 Player_seek(Player_getPosition() - cfg->seek_interval_ms);
                 left_seeked = true;
                 dirty = 1;
@@ -989,7 +989,7 @@ AppModule module_player_run(SDL_Surface *screen)
                 right_armed  = true;
                 right_seeked = false;
             }
-            if (PAD_justRepeated(BTN_RIGHT) && right_armed) {
+            if (PAD_justRepeated(BTN_RIGHT) && right_armed && !PAD_justPressed(BTN_RIGHT)) {
                 Player_seek(Player_getPosition() + cfg->seek_interval_ms);
                 right_seeked = true;
                 dirty = 1;
