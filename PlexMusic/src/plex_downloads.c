@@ -21,11 +21,12 @@
  * Constants
  * ------------------------------------------------------------------ */
 
-#define MANIFEST_FILENAME    "downloads.json"
-#define FALLBACK_BASE_DIR    "/mnt/SDCARD/.userdata/shared/plexmusic"
-#define DL_QUEUE_MAX         8
-#define MANIFEST_ALBUMS_MAX  64
-#define MANIFEST_TRACKS_MAX  64   /* max tracks per album */
+#define MANIFEST_FILENAME         "downloads.json"
+#define FALLBACK_BASE_DIR         "/mnt/SDCARD/.userdata/shared/plexmusic"
+#define DL_QUEUE_MAX              8
+#define MANIFEST_ALBUMS_CAP_INIT  128
+#define MANIFEST_TRACKS_CAP_INIT  2048
+#define MANIFEST_TRACKS_PER_ALBUM 64   /* per-album sanity cap in worker */
 
 /* URL-encoded X-Plex-Client-Profile-Extra value requesting OGG/Opus output */
 #define OPUS_PROFILE_EXTRA \
@@ -52,14 +53,14 @@ typedef struct {
 
 /* One album as stored in the manifest. */
 typedef struct {
-    int           album_id;
-    int           artist_id;
-    char          album_title[PLEX_MAX_STR];
-    char          artist_name[PLEX_MAX_STR];
-    char          thumb[PLEX_MAX_URL];
-    char          year[8];
-    ManifestTrack tracks[MANIFEST_TRACKS_MAX];
-    int           track_count;
+    int  album_id;
+    int  artist_id;
+    char album_title[PLEX_MAX_STR];
+    char artist_name[PLEX_MAX_STR];
+    char thumb[PLEX_MAX_URL];
+    char year[8];
+    int  track_start;   /* index into g_tracks[] */
+    int  track_count;
 } ManifestAlbum;
 
 /* One entry in the pending download queue. */
@@ -86,8 +87,14 @@ static volatile bool    g_stop    = false;
 static bool             g_started = false;
 
 /* Manifest: downloaded albums */
-static ManifestAlbum g_albums[MANIFEST_ALBUMS_MAX];
-static int           g_album_count = 0;
+static ManifestAlbum *g_albums     = NULL;
+static int            g_albums_cap = 0;
+static int            g_album_count = 0;
+
+/* Flat track pool: album N's tracks are at g_tracks[album.track_start .. track_start+track_count-1] */
+static ManifestTrack *g_tracks     = NULL;
+static int            g_tracks_cap = 0;
+static int            g_track_count = 0;
 
 /* Download queue (ring buffer, FIFO) */
 static QueueEntry g_queue[DL_QUEUE_MAX];
@@ -295,6 +302,35 @@ static int opus_download_track(const char *server_url,
 }
 
 /* ------------------------------------------------------------------
+ * Grow helpers — caller must hold g_mutex (or call before worker starts)
+ * ------------------------------------------------------------------ */
+
+/* Returns false on allocation failure. */
+static bool grow_albums(int needed)
+{
+    if (needed <= g_albums_cap) return true;
+    int new_cap = g_albums_cap * 2;
+    if (new_cap < needed) new_cap = needed;
+    ManifestAlbum *p = realloc(g_albums, new_cap * sizeof(ManifestAlbum));
+    if (!p) return false;
+    g_albums     = p;
+    g_albums_cap = new_cap;
+    return true;
+}
+
+static bool grow_tracks(int needed)
+{
+    if (needed <= g_tracks_cap) return true;
+    int new_cap = g_tracks_cap * 2;
+    if (new_cap < needed) new_cap = needed;
+    ManifestTrack *p = realloc(g_tracks, new_cap * sizeof(ManifestTrack));
+    if (!p) return false;
+    g_tracks     = p;
+    g_tracks_cap = new_cap;
+    return true;
+}
+
+/* ------------------------------------------------------------------
  * Manifest persistence — caller must hold g_mutex
  * ------------------------------------------------------------------ */
 
@@ -326,7 +362,7 @@ static void manifest_save_locked(void)
         JSON_Array *tracks_a = json_value_get_array(tracks_v);
 
         for (int j = 0; j < ma->track_count; j++) {
-            const ManifestTrack *mt = &ma->tracks[j];
+            const ManifestTrack *mt = &g_tracks[ma->track_start + j];
 
             JSON_Value  *trk_v   = json_value_init_object();
             JSON_Object *trk_obj = json_value_get_object(trk_v);
@@ -381,7 +417,7 @@ static bool album_fully_downloaded(const ManifestAlbum *ma)
 {
     if (ma->track_count == 0) return false;
     for (int i = 0; i < ma->track_count; i++) {
-        if (access(ma->tracks[i].local_path, F_OK) != 0)
+        if (access(g_tracks[ma->track_start + i].local_path, F_OK) != 0)
             return false;
     }
     return true;
@@ -411,7 +447,7 @@ static void manifest_load(void)
     }
 
     size_t album_cnt = json_array_get_count(albums_a);
-    for (size_t i = 0; i < album_cnt && g_album_count < MANIFEST_ALBUMS_MAX; i++) {
+    for (size_t i = 0; i < album_cnt; i++) {
         JSON_Object *alb_obj = json_array_get_object(albums_a, i);
         if (!alb_obj) continue;
 
@@ -433,9 +469,12 @@ static void manifest_load(void)
         if (s) strncpy(ma.year, s, sizeof(ma.year) - 1);
 
         JSON_Array *tracks_a = json_object_get_array(alb_obj, "tracks");
+        int pending_track_start = g_track_count;
+        int pending_track_count = 0;
+
         if (tracks_a) {
             size_t trk_cnt = json_array_get_count(tracks_a);
-            for (size_t j = 0; j < trk_cnt && ma.track_count < MANIFEST_TRACKS_MAX; j++) {
+            for (size_t j = 0; j < trk_cnt && pending_track_count < MANIFEST_TRACKS_PER_ALBUM; j++) {
                 JSON_Object *trk_obj = json_array_get_object(tracks_a, j);
                 if (!trk_obj) continue;
 
@@ -457,17 +496,25 @@ static void manifest_load(void)
                 if ((s = json_object_get_string(trk_obj, "local_path")))
                     strncpy(mt.local_path, s, sizeof(mt.local_path) - 1);
 
-                ma.tracks[ma.track_count++] = mt;
+                if (!grow_tracks(g_track_count + 1)) break;
+                g_tracks[g_track_count++] = mt;
+                pending_track_count++;
             }
         }
+
+        ma.track_start = pending_track_start;
+        ma.track_count = pending_track_count;
 
         /* Discard albums with any missing files (partial previous download) */
         if (!album_fully_downloaded(&ma)) {
             PLEX_LOG("[Downloads] Discarding partial album %d (%s)\n",
                      ma.album_id, ma.album_title);
+            /* Roll back appended tracks */
+            g_track_count = pending_track_start;
             continue;
         }
 
+        if (!grow_albums(g_album_count + 1)) break;
         g_albums[g_album_count++] = ma;
     }
 
@@ -524,22 +571,24 @@ static void *download_worker(void *arg)
         PLEX_LOG("[Downloads] Album %d: %d tracks to download\n",
                  entry.album_rating_key, track_count);
 
-        /* Build manifest album in-progress; appended to g_albums track by track */
-        ManifestAlbum ma;
-        memset(&ma, 0, sizeof(ma));
-        ma.album_id  = entry.album_rating_key;
-        ma.artist_id = entry.artist_id;
-        strncpy(ma.album_title, entry.album_title, sizeof(ma.album_title) - 1);
-        strncpy(ma.artist_name, entry.artist_name, sizeof(ma.artist_name) - 1);
-        strncpy(ma.thumb,       entry.thumb,       sizeof(ma.thumb) - 1);
-        strncpy(ma.year,        entry.year,        sizeof(ma.year) - 1);
-
-        int limit = track_count < MANIFEST_TRACKS_MAX ? track_count : MANIFEST_TRACKS_MAX;
+        int limit = track_count < MANIFEST_TRACKS_PER_ALBUM ? track_count : MANIFEST_TRACKS_PER_ALBUM;
 
         pthread_mutex_lock(&g_mutex);
         g_active_completed = 0;
         g_active_total     = limit;
         pthread_mutex_unlock(&g_mutex);
+
+        /* Heap-allocate local track buffer for this album's download */
+        ManifestTrack *work_tracks = malloc(MANIFEST_TRACKS_PER_ALBUM * sizeof(ManifestTrack));
+        if (!work_tracks) {
+            PLEX_LOG_ERROR("[Downloads] OOM allocating work_tracks for album %d\n",
+                           entry.album_rating_key);
+            pthread_mutex_lock(&g_mutex);
+            if (g_active_album_id == entry.album_rating_key) g_active_album_id = -1;
+            pthread_mutex_unlock(&g_mutex);
+            continue;
+        }
+        int work_track_count = 0;
 
         /* Read download bitrate once per album (int read is atomic enough; value only
          * changes when the user saves settings on the main thread). */
@@ -609,9 +658,11 @@ static void *download_worker(void *arg)
             strncpy(mt.local_path, local_path,   sizeof(mt.local_path) - 1);
 
             pthread_mutex_lock(&g_mutex);
-            g_active_completed = ma.track_count + 1;  /* +1: this track is about to be committed */
+            g_active_completed = work_track_count + 1;
             pthread_mutex_unlock(&g_mutex);
-            ma.tracks[ma.track_count++] = mt;
+
+            if (work_track_count < MANIFEST_TRACKS_PER_ALBUM)
+                work_tracks[work_track_count++] = mt;
         }
 
         pthread_mutex_lock(&g_mutex);
@@ -620,23 +671,62 @@ static void *download_worker(void *arg)
         g_active_completed = 0;
         g_active_total     = 0;
 
-        if (ma.track_count > 0) {
-            bool found = false;
+        if (work_track_count > 0) {
+            /* Find existing album or append new one */
+            int idx = -1;
             for (int k = 0; k < g_album_count; k++) {
-                if (g_albums[k].album_id == ma.album_id) {
-                    g_albums[k] = ma;
-                    found = true;
-                    break;
+                if (g_albums[k].album_id == entry.album_rating_key) { idx = k; break; }
+            }
+
+            if (idx >= 0) {
+                /* Replace existing — remove old tracks first */
+                int old_start = g_albums[idx].track_start;
+                int old_count = g_albums[idx].track_count;
+                if (old_count > 0) {
+                    memmove(&g_tracks[old_start],
+                            &g_tracks[old_start + old_count],
+                            (g_track_count - old_start - old_count) * sizeof(ManifestTrack));
+                    g_track_count -= old_count;
+                    for (int k = 0; k < g_album_count; k++) {
+                        if (g_albums[k].track_start > old_start)
+                            g_albums[k].track_start -= old_count;
+                    }
+                }
+                /* Append new tracks and update album */
+                if (grow_tracks(g_track_count + work_track_count)) {
+                    g_albums[idx].track_start = g_track_count;
+                    g_albums[idx].track_count = work_track_count;
+                    memcpy(&g_tracks[g_track_count], work_tracks,
+                           work_track_count * sizeof(ManifestTrack));
+                    g_track_count += work_track_count;
+                }
+            } else {
+                /* New album */
+                if (grow_albums(g_album_count + 1) &&
+                    grow_tracks(g_track_count + work_track_count)) {
+                    ManifestAlbum ma_new;
+                    memset(&ma_new, 0, sizeof(ma_new));
+                    ma_new.album_id  = entry.album_rating_key;
+                    ma_new.artist_id = entry.artist_id;
+                    strncpy(ma_new.album_title, entry.album_title, sizeof(ma_new.album_title) - 1);
+                    strncpy(ma_new.artist_name, entry.artist_name, sizeof(ma_new.artist_name) - 1);
+                    strncpy(ma_new.thumb,       entry.thumb,       sizeof(ma_new.thumb) - 1);
+                    strncpy(ma_new.year,        entry.year,        sizeof(ma_new.year) - 1);
+                    ma_new.track_start = g_track_count;
+                    ma_new.track_count = work_track_count;
+                    memcpy(&g_tracks[g_track_count], work_tracks,
+                           work_track_count * sizeof(ManifestTrack));
+                    g_track_count += work_track_count;
+                    g_albums[g_album_count++] = ma_new;
                 }
             }
-            if (!found && g_album_count < MANIFEST_ALBUMS_MAX)
-                g_albums[g_album_count++] = ma;
             manifest_save_locked();
         }
         pthread_mutex_unlock(&g_mutex);
+        free(work_tracks);
 
         PLEX_LOG("[Downloads] Album %d done (%d/%d tracks)\n",
-                 entry.album_rating_key, ma.track_count, limit);
+                 entry.album_rating_key, work_track_count, limit);
     }
 
     return NULL;
@@ -648,6 +738,12 @@ static void *download_worker(void *arg)
 
 void plex_downloads_init(void)
 {
+    g_albums = malloc(MANIFEST_ALBUMS_CAP_INIT * sizeof(ManifestAlbum));
+    g_albums_cap = g_albums ? MANIFEST_ALBUMS_CAP_INIT : 0;
+
+    g_tracks = malloc(MANIFEST_TRACKS_CAP_INIT * sizeof(ManifestTrack));
+    g_tracks_cap = g_tracks ? MANIFEST_TRACKS_CAP_INIT : 0;
+
     manifest_load();
 
     g_stop            = false;
@@ -676,6 +772,9 @@ void plex_downloads_quit(void)
     pthread_join(g_worker, NULL);
     g_started = false;
     PLEX_LOG("[Downloads] Shutdown complete\n");
+
+    free(g_albums); g_albums = NULL; g_albums_cap = 0; g_album_count = 0;
+    free(g_tracks); g_tracks = NULL; g_tracks_cap = 0; g_track_count = 0;
 }
 
 void plex_downloads_queue_album(const PlexConfig *cfg,
@@ -803,10 +902,21 @@ int plex_downloads_get_artists(PlexArtist *out, int out_max)
 
     pthread_mutex_lock(&g_mutex);
 
+    if (g_album_count == 0) {
+        pthread_mutex_unlock(&g_mutex);
+        return 0;
+    }
+
     /* Collect unique (artist_id, artist_name) pairs */
-    int  artist_ids[MANIFEST_ALBUMS_MAX];
-    char artist_names[MANIFEST_ALBUMS_MAX][PLEX_MAX_STR];
-    int  unique_count = 0;
+    int   unique_count = 0;
+    int  *artist_ids   = malloc(g_album_count * sizeof(int));
+    char (*artist_names)[PLEX_MAX_STR] = malloc(g_album_count * sizeof(*artist_names));
+    if (!artist_ids || !artist_names) {
+        free(artist_ids);
+        free(artist_names);
+        pthread_mutex_unlock(&g_mutex);
+        return 0;
+    }
 
     for (int i = 0; i < g_album_count; i++) {
         bool found = false;
@@ -816,7 +926,7 @@ int plex_downloads_get_artists(PlexArtist *out, int out_max)
                 break;
             }
         }
-        if (!found && unique_count < MANIFEST_ALBUMS_MAX) {
+        if (!found && unique_count < g_album_count) {
             artist_ids[unique_count] = g_albums[i].artist_id;
             strncpy(artist_names[unique_count], g_albums[i].artist_name,
                     PLEX_MAX_STR - 1);
@@ -852,6 +962,8 @@ int plex_downloads_get_artists(PlexArtist *out, int out_max)
         strncpy(out[i].title, artist_names[i], sizeof(out[i].title) - 1);
     }
 
+    free(artist_ids);
+    free(artist_names);
     pthread_mutex_unlock(&g_mutex);
     return n;
 }
@@ -925,7 +1037,7 @@ void plex_downloads_delete_album(int album_id)
 
     /* Delete track files */
     for (int j = 0; j < ma->track_count; j++)
-        remove(ma->tracks[j].local_path);
+        remove(g_tracks[ma->track_start + j].local_path);
 
     /* Remove album directory (best-effort; may fail if non-empty) */
     char base[512];
@@ -934,7 +1046,22 @@ void plex_downloads_delete_album(int album_id)
     snprintf(album_dir, sizeof(album_dir), "%s/%d", base, album_id);
     rmdir(album_dir);
 
-    /* Remove from manifest array */
+    int ts = ma->track_start;
+    int tc = ma->track_count;
+
+    /* Remove track pool entries */
+    if (tc > 0) {
+        memmove(&g_tracks[ts], &g_tracks[ts + tc],
+                (g_track_count - ts - tc) * sizeof(ManifestTrack));
+        g_track_count -= tc;
+        /* Fix track_start for all albums that came after the deleted ones */
+        for (int k = 0; k < g_album_count; k++) {
+            if (g_albums[k].track_start > ts)
+                g_albums[k].track_start -= tc;
+        }
+    }
+
+    /* Remove album entry */
     if (idx < g_album_count - 1)
         memmove(&g_albums[idx], &g_albums[idx + 1],
                 (g_album_count - idx - 1) * sizeof(ManifestAlbum));
@@ -952,29 +1079,28 @@ int plex_downloads_get_tracks_for_album(int album_id,
 
     pthread_mutex_lock(&g_mutex);
 
-    int n = 0;
     for (int i = 0; i < g_album_count; i++) {
         if (g_albums[i].album_id != album_id) continue;
 
         const ManifestAlbum *ma = &g_albums[i];
-        int limit = ma->track_count < out_max ? ma->track_count : out_max;
+        int n = ma->track_count < out_max ? ma->track_count : out_max;
 
-        for (int j = 0; j < limit; j++) {
-            const ManifestTrack *mt = &ma->tracks[j];
-            memset(&out[n], 0, sizeof(out[n]));
-            out[n].rating_key   = mt->track_id;
-            out[n].track_number = mt->track_number;
-            out[n].duration_ms  = mt->duration_ms;
-            strncpy(out[n].title,  mt->title,  sizeof(out[n].title) - 1);
-            strncpy(out[n].artist, mt->artist, sizeof(out[n].artist) - 1);
-            strncpy(out[n].album,  mt->album,  sizeof(out[n].album) - 1);
-            strncpy(out[n].thumb,      mt->thumb,      sizeof(out[n].thumb) - 1);
-            strncpy(out[n].local_path, mt->local_path, sizeof(out[n].local_path) - 1);
-            n++;
+        for (int j = 0; j < n; j++) {
+            const ManifestTrack *mt = &g_tracks[ma->track_start + j];
+            memset(&out[j], 0, sizeof(out[j]));
+            out[j].rating_key   = mt->track_id;
+            out[j].track_number = mt->track_number;
+            out[j].duration_ms  = mt->duration_ms;
+            strncpy(out[j].title,      mt->title,      sizeof(out[j].title) - 1);
+            strncpy(out[j].artist,     mt->artist,     sizeof(out[j].artist) - 1);
+            strncpy(out[j].album,      mt->album,      sizeof(out[j].album) - 1);
+            strncpy(out[j].thumb,      mt->thumb,      sizeof(out[j].thumb) - 1);
+            strncpy(out[j].local_path, mt->local_path, sizeof(out[j].local_path) - 1);
         }
-        break;  /* album_id is unique in manifest */
+        pthread_mutex_unlock(&g_mutex);
+        return n;
     }
 
     pthread_mutex_unlock(&g_mutex);
-    return n;
+    return 0;
 }
