@@ -109,6 +109,7 @@ SOURCE = main.c \
          plex_auth.c \
          plex_config.c \
          plex_downloads.c \
+         plex_favorites.c \
          plex_net.c \
          player.c \
          background.c \

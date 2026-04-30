@@ -22,6 +22,7 @@
 #include "module_settings.h"
 #include "plex_queue.h"
 #include "plex_downloads.h"
+#include "plex_favorites.h"
 
 /* Global quit flag, set by signal handler */
 static volatile bool g_quit = false;
@@ -115,6 +116,9 @@ int main(int argc, char *argv[]) {
     plex_downloads_init();
     PLEX_LOG("[DIAG] plex_downloads_init done\n");
 
+    plex_favorites_init();
+    PLEX_LOG("[DIAG] plex_favorites_init done\n");
+
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
 
@@ -185,6 +189,7 @@ int main(int argc, char *argv[]) {
     /* --- Clean shutdown --- */
     PWR_enableAutosleep();
     plex_downloads_quit();
+    plex_favorites_quit();
     plex_art_cleanup();
     Player_quit();
     Fonts_unload();

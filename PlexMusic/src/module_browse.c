@@ -19,6 +19,7 @@
 #include "plex_models.h"
 #include "plex_queue.h"
 #include "plex_downloads.h"
+#include "plex_favorites.h"
 #include "ui_fonts.h"
 #include "ui_utils.h"
 
@@ -37,6 +38,7 @@ typedef enum {
     BROWSE_ALL_ALBUMS,       /* flat all-albums list */
     BROWSE_ALL_ALBUMS_PAGE,  /* append-only page load; NOT a visible state */
     BROWSE_RECENT_ALBUMS,    /* recently added albums (online only) */
+    BROWSE_FAVORITES,        /* favorite tracks list (online only) */
 } BrowseState;
 
 typedef enum {
@@ -528,7 +530,7 @@ static void render_delete_confirm_dialog(SDL_Surface *screen)
  * Label callbacks
  * ========================================================================= */
 
-/* Home screen label callback: [Now Playing] / Artists / Albums / [Recently Added] / Settings */
+/* Home screen label callback: [Now Playing] / Artists / Albums / [Favorites] / [Recently Added] / Settings */
 typedef struct {
     bool        bg_active;
     const char *now_playing_label;
@@ -537,6 +539,7 @@ typedef struct {
     int         settings_idx;
     int         recent_idx;
     int         nowplay_idx;
+    int         fav_idx;
 } HomeLabelCtx;
 
 static void home_get_label(int idx, char *buf, int size, void *ud)
@@ -545,6 +548,7 @@ static void home_get_label(int idx, char *buf, int size, void *ud)
     if (ctx->nowplay_idx >= 0 && idx == ctx->nowplay_idx) { snprintf(buf, size, "%s", ctx->now_playing_label); return; }
     if (idx == ctx->artists_idx) { snprintf(buf, size, "Artists"); return; }
     if (idx == ctx->albums_idx)  { snprintf(buf, size, "Albums");  return; }
+    if (ctx->fav_idx >= 0 && idx == ctx->fav_idx) { snprintf(buf, size, "Favorite Tracks"); return; }
     if (ctx->recent_idx >= 0 && idx == ctx->recent_idx) { snprintf(buf, size, "Recently Added"); return; }
     snprintf(buf, size, "Settings");
 }
@@ -617,7 +621,8 @@ static void album_get_label(int i, char *buf, int size, void *ud)
 
 typedef struct {
     PlexTrack *tracks;
-    int count;
+    int        count;
+    bool       show_favorites;  /* prepend ♥ for favorited tracks */
 } TrackLabelCtx;
 
 static void track_get_label(int i, char *buf, int size, void *ud)
@@ -625,11 +630,18 @@ static void track_get_label(int i, char *buf, int size, void *ud)
     TrackLabelCtx *ctx = (TrackLabelCtx *)ud;
     char dur[16];
     format_duration(ctx->tracks[i].duration_ms, dur, sizeof(dur));
+
+    bool fav = ctx->show_favorites &&
+               plex_favorites_contains(ctx->tracks[i].rating_key);
+    const char *heart = fav ? "\xe2\x99\xa5 " : "";
+
     if (ctx->tracks[i].track_number > 0)
-        snprintf(buf, size, "%d. %s  %s",
-                 ctx->tracks[i].track_number, ctx->tracks[i].title, dur);
+        snprintf(buf, size, "%s%d. %s  %s",
+                 heart, ctx->tracks[i].track_number,
+                 ctx->tracks[i].title, dur);
     else
-        snprintf(buf, size, "%s  %s", ctx->tracks[i].title, dur);
+        snprintf(buf, size, "%s%s  %s",
+                 heart, ctx->tracks[i].title, dur);
 }
 
 /* =========================================================================
@@ -644,6 +656,10 @@ static PlexArtist  *s_artists        = NULL;
 static int          s_artists_cap    = 0;
 static PlexAlbum   *s_all_albums     = NULL;
 static int          s_all_albums_cap = 0;
+
+/* Favorites list — file-scope to avoid stack overflow (~1.3 MB) */
+static PlexTrack s_fav_tracks[PLEX_MAX_TRACKS];
+static int       s_fav_count = 0;
 
 static bool pending_r2_jump     = false; /* deferred artist letter jump */
 static bool pending_r2_jump_all = false; /* deferred all-albums year jump */
@@ -721,6 +737,10 @@ AppModule module_browse_run(SDL_Surface *screen)
     static int           recent_album_selected = 0;
     static int           recent_album_scroll   = 0;
     static LoadState     recent_albums_ls      = LOAD_IDLE;
+
+    /* Favorite Tracks (online only) */
+    static int           fav_selected  = 0;
+    static int           fav_scroll    = 0;
 
     /* Tracks */
     static PlexTrack     tracks[PLEX_MAX_TRACKS];
@@ -865,20 +885,16 @@ AppModule module_browse_run(SDL_Surface *screen)
             bool bg_active = (Background_getActive() == BG_MUSIC);
             bool online    = !cfg->offline_mode;
 
-            int artists_idx, albums_idx, recent_idx, nowplay_idx, settings_idx, home_item_count;
+            int artists_idx, albums_idx, fav_idx, recent_idx, nowplay_idx, settings_idx, home_item_count;
 
             if (bg_active) {
-                nowplay_idx = 0;
-                artists_idx = 1;
-                albums_idx  = 2;
-                if (online) { recent_idx = 3; settings_idx = 4; home_item_count = 5; }
-                else        { recent_idx = -1; settings_idx = 3; home_item_count = 4; }
+                nowplay_idx = 0; artists_idx = 1; albums_idx = 2;
+                if (online) { fav_idx = 3; recent_idx = 4; settings_idx = 5; home_item_count = 6; }
+                else        { fav_idx = -1; recent_idx = -1; settings_idx = 3; home_item_count = 4; }
             } else {
-                nowplay_idx = -1;
-                artists_idx = 0;
-                albums_idx  = 1;
-                if (online) { recent_idx = 2; settings_idx = 3; home_item_count = 4; }
-                else        { recent_idx = -1; settings_idx = 2; home_item_count = 3; }
+                nowplay_idx = -1; artists_idx = 0; albums_idx = 1;
+                if (online) { fav_idx = 2; recent_idx = 3; settings_idx = 4; home_item_count = 5; }
+                else        { fav_idx = -1; recent_idx = -1; settings_idx = 2; home_item_count = 3; }
             }
 
             /* Clamp selection in case bg state changed */
@@ -981,6 +997,16 @@ AppModule module_browse_run(SDL_Surface *screen)
                         GFX_sync();
                         continue;
                     }
+                } else if (fav_idx >= 0 && lib_selected == fav_idx) {
+                    s_fav_count   = plex_favorites_get(s_fav_tracks, PLEX_MAX_TRACKS);
+                    fav_selected  = 0;
+                    fav_scroll    = 0;
+                    last_art_thumb[0] = '\0';
+                    plex_art_clear();
+                    state = BROWSE_FAVORITES;
+                    dirty = 1;
+                    GFX_sync();
+                    continue;
                 }
             } else if (PAD_justPressed(BTN_B)) {
                 quit_confirm_active = true;
@@ -1002,6 +1028,14 @@ AppModule module_browse_run(SDL_Surface *screen)
                     artists_ls       = LOAD_IDLE;
                     all_albums_ls    = LOAD_IDLE;
                     recent_albums_ls = LOAD_IDLE;
+                    if (s_artists == NULL) {
+                        s_artists     = malloc(PLEX_MAX_OFFLINE_ITEMS * sizeof(PlexArtist));
+                        s_artists_cap = s_artists ? PLEX_MAX_OFFLINE_ITEMS : 0;
+                    }
+                    if (s_all_albums == NULL) {
+                        s_all_albums     = malloc(PLEX_MAX_OFFLINE_ITEMS * sizeof(PlexAlbum));
+                        s_all_albums_cap = s_all_albums ? PLEX_MAX_OFFLINE_ITEMS : 0;
+                    }
                 } else {
                     /* Switch back to online */
                     mutable_cfg->offline_mode = false;
@@ -1025,6 +1059,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 hctx.settings_idx      = settings_idx;
                 hctx.recent_idx        = recent_idx;
                 hctx.nowplay_idx       = nowplay_idx;
+                hctx.fav_idx           = fav_idx;
 
                 const char *home_header = cfg->offline_mode ? "Music (Offline)" : "Music (Online)";
                 render_browse_screen(screen, home_header,
@@ -2446,6 +2481,9 @@ AppModule module_browse_run(SDL_Surface *screen)
                 dirty = 1;
                 GFX_sync();
                 continue;
+            } else if (PAD_justPressed(BTN_Y) && !cfg->offline_mode && track_count > 0) {
+                plex_favorites_toggle(&tracks[track_selected]);
+                dirty = 1;
             }
 
             /* Poll art async */
@@ -2454,8 +2492,9 @@ AppModule module_browse_run(SDL_Surface *screen)
             /* Render */
             if (dirty) {
                 TrackLabelCtx tctx;
-                tctx.tracks = tracks;
-                tctx.count  = track_count;
+                tctx.tracks         = tracks;
+                tctx.count          = track_count;
+                tctx.show_favorites = !cfg->offline_mode;
 
                 /* Album title + year as art metadata */
                 char art_line2[PLEX_MAX_STR + 8] = "";
@@ -2491,6 +2530,69 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      plex_art_get(),
                                      track_get_label, &tctx,
                                      "PLAY", "BACK", 0);
+                if (!cfg->offline_mode)
+                    GFX_blitButtonGroup((char*[]){"Y", "FAVORITE", NULL}, 0, screen, 0);
+                GFX_flip(screen);
+                dirty = 0;
+            } else {
+                GFX_sync();
+            }
+
+        /* ==============================================================
+         * BROWSE_FAVORITES
+         * ============================================================== */
+        } else if (state == BROWSE_FAVORITES) {
+
+            /* Hold-acceleration */
+            if (!PAD_isPressed(BTN_UP))   s_hold_up_since   = 0;
+            if (!PAD_isPressed(BTN_DOWN)) s_hold_down_since = 0;
+            if (PAD_justPressed(BTN_UP))  s_hold_up_since   = SDL_GetTicks();
+            if (PAD_justPressed(BTN_DOWN))s_hold_down_since = SDL_GetTicks();
+
+            /* Input */
+            if (PAD_justRepeated(BTN_UP)) {
+                int step = scroll_step(s_hold_up_since);
+                int prev = fav_selected;
+                fav_selected = (fav_selected >= step) ? fav_selected - step : 0;
+                if (fav_selected != prev) dirty = 1;
+            } else if (PAD_justRepeated(BTN_DOWN)) {
+                int step = scroll_step(s_hold_down_since);
+                int prev = fav_selected;
+                int cap  = s_fav_count - 1;
+                fav_selected = (fav_selected + step <= cap) ? fav_selected + step : (cap >= 0 ? cap : 0);
+                if (fav_selected != prev) dirty = 1;
+            } else if (PAD_justPressed(BTN_A) && s_fav_count > 0) {
+                Background_setActive(BG_NONE);
+                plex_queue_set(cfg, s_fav_tracks, s_fav_count, fav_selected);
+                return MODULE_PLAYER;
+            } else if (PAD_justPressed(BTN_B)) {
+                state = BROWSE_LIBRARIES;
+                dirty = 1;
+                GFX_sync();
+                continue;
+            } else if (PAD_justPressed(BTN_Y) && s_fav_count > 0) {
+                plex_favorites_toggle(&s_fav_tracks[fav_selected]);
+                s_fav_count = plex_favorites_get(s_fav_tracks, PLEX_MAX_TRACKS);
+                if (fav_selected >= s_fav_count)
+                    fav_selected = s_fav_count > 0 ? s_fav_count - 1 : 0;
+                fav_scroll = 0;
+                dirty = 1;
+            }
+
+            /* Render */
+            if (dirty) {
+                TrackLabelCtx tctx;
+                tctx.tracks         = s_fav_tracks;
+                tctx.count          = s_fav_count;
+                tctx.show_favorites = false;  /* no hearts — every item is a favorite */
+
+                render_browse_screen(screen, "Favorite Tracks",
+                                     fav_selected, &fav_scroll,
+                                     s_fav_count,
+                                     NULL, NULL, NULL, NULL,
+                                     track_get_label, &tctx,
+                                     "PLAY", "BACK", 0);
+                GFX_blitButtonGroup((char*[]){"Y", "REMOVE", NULL}, 0, screen, 0);
                 GFX_flip(screen);
                 dirty = 0;
             } else {
