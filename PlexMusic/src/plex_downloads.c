@@ -207,7 +207,8 @@ static int opus_download_track(const char *server_url,
                                 const char *token,
                                 int         track_rating_key,
                                 int         bitrate_kbps,
-                                const char *local_path)
+                                const char *local_path,
+                                volatile bool *should_cancel)
 {
     char session_id[64];
     generate_session_id(track_rating_key, session_id, sizeof(session_id));
@@ -236,6 +237,7 @@ static int opus_download_track(const char *server_url,
     opts.method      = PLEX_HTTP_GET;
     opts.token       = NULL;
     opts.timeout_sec = 30;
+    opts.no_persist  = true;
 
     int dec_ret = plex_net_fetch(url, decision_buf, sizeof(decision_buf), &opts);
     if (dec_ret < 0) {
@@ -265,8 +267,9 @@ static int opus_download_track(const char *server_url,
     opts.method      = PLEX_HTTP_GET;
     opts.token       = NULL;
     opts.timeout_sec = 300;
+    opts.no_persist  = true;
 
-    int start_ret = plex_net_download_file(url, local_path, NULL, NULL, &opts);
+    int start_ret = plex_net_download_file(url, local_path, NULL, should_cancel, &opts);
     if (start_ret >= 0)
         PLEX_LOG("[Downloads] /start downloaded %d bytes -> %s\n", start_ret, local_path);
     else
@@ -294,6 +297,7 @@ static int opus_download_track(const char *server_url,
     opts.method      = PLEX_HTTP_GET;
     opts.token       = NULL;
     opts.timeout_sec = 15;
+    opts.no_persist  = true;
 
     plex_net_fetch(url, stop_buf, sizeof(stop_buf), &opts); /* fire-and-forget */
     PLEX_LOG("[Downloads] /stop called for track %d\n", track_rating_key);
@@ -621,7 +625,7 @@ static void *download_worker(void *arg)
             if (dl_bitrate > 0) {
                 ensure_parent_dirs(local_path);
                 int ret = opus_download_track(entry.server_url, entry.token,
-                                              t->rating_key, dl_bitrate, local_path);
+                                              t->rating_key, dl_bitrate, local_path, &g_stop);
                 if (ret < 0) {
                     PLEX_LOG_ERROR("[Downloads] Opus download failed for track %d (%s), skipping\n",
                                    t->rating_key, t->title);
@@ -637,7 +641,8 @@ static void *download_worker(void *arg)
                 opts.method      = PLEX_HTTP_GET;
                 opts.token       = NULL;
                 opts.timeout_sec = 120;
-                int ret = plex_net_download_file(stream_url, local_path, NULL, NULL, &opts);
+                opts.no_persist  = true;
+                int ret = plex_net_download_file(stream_url, local_path, NULL, &g_stop, &opts);
                 if (ret < 0) {
                     PLEX_LOG_ERROR("[Downloads] Failed to download track %d (%s), skipping\n",
                                    t->rating_key, t->title);
