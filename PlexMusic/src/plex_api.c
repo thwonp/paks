@@ -138,7 +138,12 @@ int plex_api_get_artists(const PlexConfig *cfg, int section_id,
     char path[512];
     snprintf(path, sizeof(path),
              "/library/sections/%d/all"
-             "?X-Plex-Container-Start=%d&X-Plex-Container-Size=%d",
+             "?type=8"
+             "&sort=titleSort"
+             "&X-Plex-Container-Start=%d"
+             "&X-Plex-Container-Size=%d"
+             "&excludeElements=Media,Director,Country"
+             "&excludeFields=summary",
              section_id, offset, page_size);
 
     JSON_Value *root = server_get(cfg, path);

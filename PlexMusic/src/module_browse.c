@@ -1253,6 +1253,16 @@ AppModule module_browse_run(SDL_Surface *screen)
                             pending_r2_jump = false;
                         }
                     }
+                    /* Proactive preload: kick next page immediately if more remain */
+                    if (artists_loaded < artists_total
+                        && artists_loaded < s_artists_cap) {
+                        s_load.artist_offset = artists_loaded;
+                        s_load.list_cap      = s_artists_cap;
+                        browse_load_kick(BROWSE_ARTISTS_PAGE, cfg,
+                                         selected_library_id, 0, 0,
+                                         NULL, NULL, s_artists, NULL, NULL, NULL, NULL);
+                        artists_page_loading = true;
+                    }
                 } else if (ws == LOAD_ERROR) {
                     browse_load_join();
                     artists_page_loading = false;
