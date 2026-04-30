@@ -977,6 +977,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                     recent_albums_ls = LOAD_IDLE;
                 }
                 dirty = 1;
+                GFX_sync();
+                continue;
             }
 
             /* Render */
