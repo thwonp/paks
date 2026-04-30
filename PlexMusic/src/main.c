@@ -98,6 +98,7 @@ int main(int argc, char *argv[]) {
     PLEX_LOG("[DIAG] PAD_init done\n");
     PWR_init();
     PLEX_LOG("[DIAG] PWR_init done\n");
+    PWR_disableAutosleep();
     WIFI_init();
     PLEX_LOG("[DIAG] WIFI_init done\n");
     Fonts_load();
@@ -182,6 +183,7 @@ int main(int argc, char *argv[]) {
     }
 
     /* --- Clean shutdown --- */
+    PWR_enableAutosleep();
     plex_downloads_quit();
     plex_art_cleanup();
     Player_quit();
