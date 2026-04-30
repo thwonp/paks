@@ -210,7 +210,9 @@ int plex_api_get_all_albums(const PlexConfig *cfg, int section_id,
              "?type=9"
              "&sort=year:desc"
              "&X-Plex-Container-Start=%d"
-             "&X-Plex-Container-Size=%d",
+             "&X-Plex-Container-Size=%d"
+             "&excludeElements=Media,Director,Country"
+             "&excludeFields=summary",
              section_id, offset, page_size);
 
     JSON_Value *root = server_get(cfg, path);

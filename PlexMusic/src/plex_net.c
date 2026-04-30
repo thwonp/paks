@@ -145,6 +145,14 @@ typedef struct {
 } PlexSSLCtx;
 
 /* ------------------------------------------------------------------
+ * Persistent connection state (one keep-alive connection for fetch calls)
+ * ------------------------------------------------------------------ */
+
+static PlexSSLCtx *s_persist_ctx       = NULL;
+static char        s_persist_host[512] = "";
+static int         s_persist_port      = 0;
+
+/* ------------------------------------------------------------------
  * Safe URL logging helper
  * ------------------------------------------------------------------ */
 
@@ -300,6 +308,20 @@ static PlexSSLCtx *ssl_ctx_connect(const char *host, int port, int timeout_sec)
 }
 
 /* ------------------------------------------------------------------
+ * Public persistent-connection management
+ * ------------------------------------------------------------------ */
+
+void plex_net_connection_close(void)
+{
+    if (s_persist_ctx) {
+        ssl_ctx_free(s_persist_ctx);
+        s_persist_ctx = NULL;
+    }
+    s_persist_host[0] = '\0';
+    s_persist_port = 0;
+}
+
+/* ------------------------------------------------------------------
  * Internal SSL/plain read/write helpers
  * ------------------------------------------------------------------ */
 
@@ -358,6 +380,7 @@ static int build_request(const char *method_str,
                          const char *host,
                          const char *token,
                          const char *body,          /* POST body or NULL */
+                         bool keep_alive,
                          char *out, int out_size)
 {
     /* Plex requires Content-Type for POST */
@@ -385,12 +408,13 @@ static int build_request(const char *method_str,
         "X-Plex-Platform: " PLEX_PLATFORM "\r\n"
         "%s"          /* token header, may be empty */
         "%s"          /* content-type / content-length, may be empty */
-        "Connection: close\r\n"
+        "%s"          /* Connection header */
         "\r\n"
         "%s",         /* body, may be empty */
         method_str, path, host,
         token_header,
         extra_headers,
+        keep_alive ? "Connection: keep-alive\r\n" : "Connection: close\r\n",
         body ? body : "");
 
     return (n < 0 || n >= out_size) ? -1 : 0;
@@ -450,6 +474,7 @@ static int plex_net_fetch_internal(const char *url,
     const char *body   = opts ? opts->body   : NULL;
     bool is_post = (opts && opts->method == PLEX_HTTP_POST);
     const char *method_str = is_post ? "POST" : "GET";
+    bool no_persist = (opts && opts->no_persist);
 
     char *host = (char *)malloc(256);
     char *path = (char *)malloc(1024);
@@ -467,7 +492,7 @@ static int plex_net_fetch_internal(const char *url,
     /* Build request string */
     char *req = (char *)malloc(4096);
     if (!req) { free(host); free(path); return -1; }
-    if (build_request(method_str, path, host, token, body, req, 4096) != 0) {
+    if (build_request(method_str, path, host, token, body, is_https, req, 4096) != 0) {
         char safe_url[PLEX_MAX_URL];
         url_path_only(url, safe_url, sizeof(safe_url));
         PLEX_LOG_ERROR("[PlexNet] Request too large for URL: %s\n", safe_url);
@@ -476,14 +501,29 @@ static int plex_net_fetch_internal(const char *url,
 
     PlexSSLCtx *ssl_ctx = NULL;
     int sock_fd = -1;
+    bool used_persist = false;
+    bool stale_reconnected = false;
 
     if (is_https) {
-        ssl_ctx = ssl_ctx_connect(host, port, timeout_sec);
-        if (!ssl_ctx) {
-            PLEX_LOG_ERROR("[PlexNet] SSL connect failed: %s:%d\n", host, port);
-            free(req); free(host); free(path); return -1;
+        if (!no_persist &&
+            s_persist_ctx &&
+            strcmp(s_persist_host, host) == 0 &&
+            s_persist_port == port) {
+            /* Attempt to reuse existing connection */
+            ssl_ctx      = s_persist_ctx;
+            sock_fd      = ssl_ctx->net.fd;
+            used_persist = true;
+        } else {
+            /* no_persist path, different host, or no existing connection — open a new one */
+            if (!no_persist)
+                plex_net_connection_close();
+            ssl_ctx = ssl_ctx_connect(host, port, timeout_sec);
+            if (!ssl_ctx) {
+                PLEX_LOG_ERROR("[PlexNet] SSL connect failed: %s:%d\n", host, port);
+                free(req); free(host); free(path); return -1;
+            }
+            sock_fd = ssl_ctx->net.fd;
         }
-        sock_fd = ssl_ctx->net.fd;
     } else {
         char port_str[16];
         snprintf(port_str, sizeof(port_str), "%d", port);
@@ -499,10 +539,29 @@ static int plex_net_fetch_internal(const char *url,
 
     /* Send request */
     if (net_send_all(ssl_ctx, sock_fd, req, (int)strlen(req)) < 0) {
-        PLEX_LOG_ERROR("[PlexNet] Failed to send request\n");
-        goto cleanup_fail;
+        if (used_persist) {
+            /* Stale connection — tear it down and reconnect once */
+            PLEX_LOG("[PlexNet] Stale connection detected, reconnecting: %s:%d\n", host, port);
+            ssl_ctx_free(ssl_ctx);
+            s_persist_ctx = NULL;
+            s_persist_host[0] = '\0';
+            s_persist_port = 0;
+            used_persist = false;
+            ssl_ctx = ssl_ctx_connect(host, port, timeout_sec);
+            if (!ssl_ctx) {
+                PLEX_LOG_ERROR("[PlexNet] SSL reconnect failed: %s:%d\n", host, port);
+                goto cleanup_fail;
+            }
+            sock_fd = ssl_ctx->net.fd;
+            if (net_send_all(ssl_ctx, sock_fd, req, (int)strlen(req)) < 0) {
+                PLEX_LOG_ERROR("[PlexNet] Failed to send request after reconnect\n");
+                goto cleanup_fail;
+            }
+        } else {
+            PLEX_LOG_ERROR("[PlexNet] Failed to send request\n");
+            goto cleanup_fail;
+        }
     }
-    free(req); req = NULL;
 
     /* Read response headers */
 #define HDR_BUF_SIZE 8192
@@ -526,9 +585,59 @@ static int plex_net_fetch_internal(const char *url,
     hdr[hdr_pos] = '\0';
 
     if (!hdr_done) {
-        PLEX_LOG_ERROR("[PlexNet] Incomplete HTTP headers\n");
-        free(hdr);
-        goto cleanup_fail;
+        if (used_persist) {
+            /* Server closed the keep-alive connection. Tear down and retry once. */
+            PLEX_LOG("[PlexNet] Stale connection on recv, reconnecting: %s:%d\n", host, port);
+            free(hdr); hdr = NULL;
+            ssl_ctx_free(ssl_ctx);
+            s_persist_ctx     = NULL;
+            s_persist_host[0] = '\0';
+            s_persist_port    = 0;
+            used_persist = false;
+            stale_reconnected = true;
+
+            ssl_ctx = ssl_ctx_connect(host, port, timeout_sec);
+            if (!ssl_ctx) {
+                PLEX_LOG_ERROR("[PlexNet] SSL reconnect failed: %s:%d\n", host, port);
+                free(req); free(host); free(path);
+                return -1;
+            }
+            sock_fd = ssl_ctx->net.fd;
+
+            if (net_send_all(ssl_ctx, sock_fd, req, (int)strlen(req)) < 0) {
+                PLEX_LOG_ERROR("[PlexNet] Failed to send after stale-recv reconnect\n");
+                goto cleanup_fail;
+            }
+
+            /* Re-read headers */
+            hdr = (char *)malloc(HDR_BUF_SIZE);
+            if (!hdr) goto cleanup_fail;
+            hdr_pos  = 0;
+            hdr_done = false;
+            while (hdr_pos < HDR_BUF_SIZE - 1) {
+                char c;
+                if (net_recv_byte(ssl_ctx, sock_fd, &c) != 1) break;
+                hdr[hdr_pos++] = c;
+                if (hdr_pos >= 4 &&
+                    hdr[hdr_pos-4] == '\r' && hdr[hdr_pos-3] == '\n' &&
+                    hdr[hdr_pos-2] == '\r' && hdr[hdr_pos-1] == '\n') {
+                    hdr_done = true;
+                    break;
+                }
+            }
+            hdr[hdr_pos] = '\0';
+
+            if (!hdr_done) {
+                PLEX_LOG_ERROR("[PlexNet] Incomplete HTTP headers after reconnect\n");
+                free(hdr);
+                goto cleanup_fail;
+            }
+            /* Fall through: hdr is now valid, continue with redirect check etc. */
+        } else {
+            PLEX_LOG_ERROR("[PlexNet] Incomplete HTTP headers\n");
+            free(hdr);
+            goto cleanup_fail;
+        }
     }
 
     /* Check for redirect */
@@ -556,7 +665,18 @@ static int plex_net_fetch_internal(const char *url,
             redir_url[rlen] = '\0';
 
             free(hdr);
-            if (ssl_ctx) ssl_ctx_free(ssl_ctx); else close(sock_fd);
+            free(req);
+            if (ssl_ctx) {
+                /* Do not leave a stale pooled ctx around during redirect */
+                if (ssl_ctx == s_persist_ctx) {
+                    s_persist_ctx = NULL;
+                    s_persist_host[0] = '\0';
+                    s_persist_port = 0;
+                }
+                ssl_ctx_free(ssl_ctx);
+            } else {
+                close(sock_fd);
+            }
             free(host); free(path);
 
             return plex_net_fetch_internal(redir_url, buffer, buffer_size,
@@ -584,6 +704,17 @@ static int plex_net_fetch_internal(const char *url,
         goto cleanup_fail;
     }
 
+    /* Parse Content-Length */
+    long content_length = -1;
+    {
+        char *cl = strcasestr(hdr, "\nContent-Length:");
+        if (cl) {
+            cl += 16;
+            while (*cl == ' ') cl++;
+            content_length = atol(cl);
+        }
+    }
+
     /* Detect chunked transfer encoding */
     bool is_chunked = false;
     {
@@ -595,8 +726,21 @@ static int plex_net_fetch_internal(const char *url,
         }
     }
 
+    /* Check if server requests connection close */
+    bool server_close = false;
+    {
+        char *conn_hdr = strcasestr(hdr, "\nConnection:");
+        if (conn_hdr) {
+            conn_hdr += 12;
+            while (*conn_hdr == ' ') conn_hdr++;
+            if (strncasecmp(conn_hdr, "close", 5) == 0)
+                server_close = true;
+        }
+    }
+
     /* Read body */
     int total_read = 0;
+    bool can_reuse = false; /* set true only when body boundary is known */
 
     if (is_chunked) {
         char csz_buf[24];
@@ -650,16 +794,45 @@ static int plex_net_fetch_internal(const char *url,
             }
             (void)crlf;
         }
-        chunked_done:;
+        chunked_done:
+        /* Chunked encoding always has a known boundary — reusable */
+        can_reuse = true;
     } else {
-        while (total_read < buffer_size - 1) {
-            int r = net_recv_buf(ssl_ctx, sock_fd,
-                                 buffer + total_read,
-                                 buffer_size - total_read - 1);
-            if (r <= 0) break;
-            total_read += r;
+        if (content_length >= 0) {
+            /* Content-Length known: read exactly that many bytes */
+            long remaining = content_length;
+            while (remaining > 0 && total_read < buffer_size - 1) {
+                int to_read = (int)(remaining);
+                if (to_read > buffer_size - 1 - total_read)
+                    to_read = buffer_size - 1 - total_read;
+                int r = net_recv_buf(ssl_ctx, sock_fd,
+                                     buffer + total_read, to_read);
+                if (r <= 0) break;
+                total_read += r;
+                remaining -= r;
+            }
+            /* Reusable only if we consumed the full body */
+            if (remaining == 0)
+                can_reuse = true;
+        } else {
+            /* No Content-Length and not chunked: read until close */
+            while (total_read < buffer_size - 1) {
+                int r = net_recv_buf(ssl_ctx, sock_fd,
+                                     buffer + total_read,
+                                     buffer_size - total_read - 1);
+                if (r <= 0) break;
+                total_read += r;
+            }
+            /* Body boundary unknown; cannot reuse */
         }
     }
+
+    /* Honour server's Connection: close — do not reuse if server said so */
+    if (server_close) can_reuse = false;
+    /* Never persist a connection that was the result of a stale-recv reconnect */
+    if (stale_reconnected) can_reuse = false;
+    /* no_persist requests must never be stored in the pool */
+    if (no_persist) can_reuse = false;
 
     /* Gzip decompression */
     bool is_gzip = false;
@@ -697,11 +870,32 @@ static int plex_net_fetch_internal(const char *url,
     }
 
     free(hdr);
-    if (ssl_ctx) ssl_ctx_free(ssl_ctx); else close(sock_fd);
+    free(req);
+    if (is_https && ssl_ctx && can_reuse) {
+        /* Store connection for reuse on next fetch to the same host:port */
+        s_persist_ctx = ssl_ctx;
+        strncpy(s_persist_host, host, sizeof(s_persist_host) - 1);
+        s_persist_host[sizeof(s_persist_host) - 1] = '\0';
+        s_persist_port = port;
+    } else if (ssl_ctx) {
+        if (ssl_ctx == s_persist_ctx) {
+            s_persist_ctx = NULL;
+            s_persist_host[0] = '\0';
+            s_persist_port = 0;
+        }
+        ssl_ctx_free(ssl_ctx);
+    } else if (sock_fd >= 0) {
+        close(sock_fd);
+    }
     free(host); free(path);
     return total_read;
 
 cleanup_fail:
+    if (ssl_ctx == s_persist_ctx) {
+        s_persist_ctx = NULL;
+        s_persist_host[0] = '\0';
+        s_persist_port = 0;
+    }
     if (ssl_ctx) ssl_ctx_free(ssl_ctx);
     else if (sock_fd >= 0) close(sock_fd);
     free(req);

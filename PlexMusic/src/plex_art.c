@@ -219,7 +219,7 @@ static void *fetch_thread_func(void *arg)
     /* Buffer must fit: server_url + path + encoded_thumb + fixed text */
     char fetch_url[PLEX_MAX_URL + PLEX_MAX_URL * 3 + 64];
     snprintf(fetch_url, sizeof(fetch_url),
-             "%s/photo/:/transcode?url=%s&width=300&height=300",
+             "%s/photo/:/transcode?url=%s&width=120&height=120",
              server_url, encoded_thumb);
 
     if (art_ctx.should_stop) {
@@ -228,8 +228,8 @@ static void *fetch_thread_func(void *arg)
         return NULL;
     }
 
-    /* Allocate image buffer (1 MB should be sufficient for 300x300 JPEG) */
-    uint8_t *img_buf = (uint8_t *)malloc(1024 * 1024);
+    /* Allocate image buffer (256 KB is ample for a 120x120 JPEG) */
+    uint8_t *img_buf = (uint8_t *)malloc(256 * 1024);
     if (!img_buf) {
         if (my_generation == art_ctx.generation)
             art_ctx.result_ready = true;
@@ -241,8 +241,9 @@ static void *fetch_thread_func(void *arg)
     opts.method      = PLEX_HTTP_GET;
     opts.token       = token;
     opts.timeout_sec = 15;
+    opts.no_persist  = true;
 
-    int bytes = plex_net_fetch(fetch_url, img_buf, 1024 * 1024, &opts);
+    int bytes = plex_net_fetch(fetch_url, img_buf, 256 * 1024, &opts);
 
     if (art_ctx.should_stop || bytes <= 0) {
         if (bytes <= 0)

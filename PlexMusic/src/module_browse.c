@@ -6,6 +6,7 @@
 #include <ctype.h>
 
 #include "api.h"
+#include "plex_net.h"
 #include "plex_log.h"
 #include "background.h"
 #include "defines.h"
@@ -623,6 +624,8 @@ void module_browse_reset(void)
         s_load.status = LOAD_IDLE;
         pthread_mutex_unlock(&s_load.lock);
     }
+    /* Close any persistent keep-alive connection (safe after thread is joined) */
+    plex_net_connection_close();
     if (s_artists)    { free(s_artists);    s_artists    = NULL; s_artists_cap    = 0; }
     if (s_all_albums) { free(s_all_albums); s_all_albums = NULL; s_all_albums_cap = 0; }
     s_browse_initialized = false;
@@ -1756,6 +1759,16 @@ AppModule module_browse_run(SDL_Surface *screen)
                         } else {
                             pending_r2_jump_all = false;
                         }
+                    }
+                    /* Proactive preload: kick next page immediately if more remain */
+                    if (all_albums_loaded < all_albums_total
+                        && all_albums_loaded < s_all_albums_cap) {
+                        s_load.all_albums_offset = all_albums_loaded;
+                        s_load.list_cap          = s_all_albums_cap;
+                        browse_load_kick(BROWSE_ALL_ALBUMS_PAGE, cfg,
+                                         selected_library_id, 0, 0,
+                                         NULL, NULL, NULL, s_all_albums, NULL, NULL, NULL);
+                        all_albums_page_loading = true;
                     }
                 } else if (ws == LOAD_ERROR) {
                     browse_load_join();

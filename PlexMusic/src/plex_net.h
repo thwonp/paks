@@ -13,6 +13,7 @@ typedef struct {
     const char    *body;         /* POST body (NULL for GET) */
     const char    *token;        /* X-Plex-Token value (NULL if not needed) */
     int            timeout_sec;  /* 0 = default (15s) */
+    bool           no_persist;   /* true = bypass s_persist_ctx pool (use for art fetches) */
 } PlexNetOptions;
 
 /*
@@ -43,5 +44,12 @@ int plex_net_download_file(const char *url, const char *filepath,
                            volatile int *progress_pct,
                            volatile bool *should_cancel,
                            const PlexNetOptions *opts);
+
+/*
+ * Close and release the persistent keep-alive connection (if any).
+ * Call this from the main thread after any worker thread using fetch has been
+ * joined (e.g. in module_browse_reset()).
+ */
+void plex_net_connection_close(void);
 
 #endif /* PLEX_NET_H */
