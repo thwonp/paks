@@ -1510,7 +1510,6 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      "SELECT", cfg->offline_mode ? "QUIT" : "BACK", 0);
                 if (cfg->offline_mode)
                     GFX_blitButtonGroup((char*[]){"SELECT", "ONLINE", NULL}, 0, screen, 0);
-                GFX_blitButtonGroup((char*[]){"L2", "PREV", "R2", "NEXT", NULL}, 0, screen, 0);
                 if (quit_confirm_active)
                     render_quit_confirm_dialog(screen);
                 GFX_flip(screen);
@@ -1614,8 +1613,17 @@ AppModule module_browse_run(SDL_Surface *screen)
                     if (album_count > 0 && album_selected >= album_count)
                         album_selected = album_count - 1;
                     delete_confirm_active = false;
-                    plex_art_clear();
-                    last_art_thumb[0] = '\0';
+                    album_scroll = 0;
+                    if (album_count > 0) {
+                        if (albums[album_selected].thumb[0]) {
+                            snprintf(last_art_thumb, sizeof(last_art_thumb),
+                                     "%s", albums[album_selected].thumb);
+                            plex_art_fetch(cfg, albums[album_selected].thumb);
+                        }
+                    } else {
+                        plex_art_clear();
+                        last_art_thumb[0] = '\0';
+                    }
                 } else if (PAD_justPressed(BTN_B)) {
                     delete_confirm_active = false;
                 }
@@ -1731,7 +1739,6 @@ AppModule module_browse_run(SDL_Surface *screen)
                     GFX_blitButtonGroup((char*[]){"Y", "DOWNLOAD", NULL}, 0, screen, 0);
                 else if (album_count > 0)
                     GFX_blitButtonGroup((char*[]){"Y", "DELETE", NULL}, 0, screen, 0);
-                GFX_blitButtonGroup((char*[]){"L2", "PREV", "R2", "NEXT", NULL}, 0, screen, 0);
                 if (delete_confirm_active)
                     render_delete_confirm_dialog(screen);
                 GFX_flip(screen);
@@ -1937,8 +1944,17 @@ AppModule module_browse_run(SDL_Surface *screen)
                     if (all_albums_loaded > 0 && all_album_selected >= all_albums_loaded)
                         all_album_selected = all_albums_loaded - 1;
                     delete_confirm_active = false;
-                    plex_art_clear();
-                    last_art_thumb[0] = '\0';
+                    all_album_scroll = 0;
+                    if (all_albums_loaded > 0) {
+                        if (s_all_albums[all_album_selected].thumb[0]) {
+                            snprintf(last_art_thumb, sizeof(last_art_thumb),
+                                     "%s", s_all_albums[all_album_selected].thumb);
+                            plex_art_fetch(cfg, s_all_albums[all_album_selected].thumb);
+                        }
+                    } else {
+                        plex_art_clear();
+                        last_art_thumb[0] = '\0';
+                    }
                 } else if (PAD_justPressed(BTN_B)) {
                     delete_confirm_active = false;
                 }
@@ -2101,7 +2117,6 @@ AppModule module_browse_run(SDL_Surface *screen)
                     GFX_blitButtonGroup((char*[]){"Y", "DOWNLOAD", NULL}, 0, screen, 0);
                 else if (all_albums_loaded > 0)
                     GFX_blitButtonGroup((char*[]){"Y", "DELETE", NULL}, 0, screen, 0);
-                GFX_blitButtonGroup((char*[]){"L2", "PREV", "R2", "NEXT", NULL}, 0, screen, 0);
                 if (delete_confirm_active)
                     render_delete_confirm_dialog(screen);
                 GFX_flip(screen);
