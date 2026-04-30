@@ -72,4 +72,11 @@ int plex_downloads_get_tracks_for_album(int album_id,
  */
 int plex_downloads_get_all_albums(PlexAlbum *out, int out_max);
 
+/*
+ * Delete a downloaded album: removes all track files, the album directory,
+ * the manifest entry, and saves the updated manifest. No-op if album_id not found.
+ * Safe to call from the main thread (locks g_mutex internally).
+ */
+void plex_downloads_delete_album(int album_id);
+
 #endif /* PLEX_DOWNLOADS_H */

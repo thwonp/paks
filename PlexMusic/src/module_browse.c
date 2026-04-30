@@ -494,6 +494,36 @@ static void render_quit_confirm_dialog(SDL_Surface *screen)
     }
 }
 
+/*
+ * Render the "Delete downloaded album?" confirmation dialog overlay on top of
+ * the current screen contents (call after the underlying screen has been drawn).
+ */
+static void render_delete_confirm_dialog(SDL_Surface *screen)
+{
+    int box_w = SCALE1(300);
+    int box_h = SCALE1(80);
+
+    DialogBox dlg = render_dialog_box(screen, box_w, box_h);
+
+    SDL_Surface *msg = TTF_RenderUTF8_Blended(
+        Fonts_getMedium(), "Delete downloaded album?", COLOR_WHITE);
+    if (msg) {
+        int tx = dlg.box_x + (dlg.box_w - msg->w) / 2;
+        int ty = dlg.box_y + SCALE1(12);
+        SDL_BlitSurface(msg, NULL, screen, &(SDL_Rect){tx, ty});
+        SDL_FreeSurface(msg);
+    }
+
+    SDL_Surface *hint = TTF_RenderUTF8_Blended(
+        Fonts_getSmall(), "[A] Delete  [B] Cancel", COLOR_LIGHT_TEXT);
+    if (hint) {
+        int tx = dlg.box_x + (dlg.box_w - hint->w) / 2;
+        int ty = dlg.box_y + box_h - SCALE1(28);
+        SDL_BlitSurface(hint, NULL, screen, &(SDL_Rect){tx, ty});
+        SDL_FreeSurface(hint);
+    }
+}
+
 /* =========================================================================
  * Label callbacks
  * ========================================================================= */
@@ -725,7 +755,9 @@ AppModule module_browse_run(SDL_Surface *screen)
     /* ------------------------------------------------------------------ */
     int dirty = 1;
     int show_setting = 0;
-    bool quit_confirm_active = false;
+    bool quit_confirm_active   = false;
+    bool delete_confirm_active   = false;
+    int  delete_confirm_album_id = -1;
 
     PlexConfig *mutable_cfg = plex_config_get_mutable();
     const PlexConfig *cfg   = mutable_cfg;
@@ -1574,7 +1606,21 @@ AppModule module_browse_run(SDL_Surface *screen)
             if (PAD_justPressed(BTN_DOWN)) s_hold_down_since = SDL_GetTicks();
 
             /* Input */
-            if (PAD_justRepeated(BTN_UP)) {
+            if (delete_confirm_active) {
+                if (PAD_justPressed(BTN_A)) {
+                    plex_downloads_delete_album(delete_confirm_album_id);
+                    album_count = plex_downloads_get_albums_for_artist(
+                        s_artists[artist_selected].rating_key, albums, PLEX_MAX_ARTIST_ALBUMS);
+                    if (album_count > 0 && album_selected >= album_count)
+                        album_selected = album_count - 1;
+                    delete_confirm_active = false;
+                    plex_art_clear();
+                    last_art_thumb[0] = '\0';
+                } else if (PAD_justPressed(BTN_B)) {
+                    delete_confirm_active = false;
+                }
+                dirty = 1;
+            } else if (PAD_justRepeated(BTN_UP)) {
                 int step = scroll_step(s_hold_up_since);
                 int prev = album_selected;
                 album_selected = (album_selected >= step) ? album_selected - step : 0;
@@ -1652,6 +1698,10 @@ AppModule module_browse_run(SDL_Surface *screen)
                     albums[album_selected].thumb,
                     albums[album_selected].year);
                 dirty = 1;
+            } else if (PAD_justPressed(BTN_Y) && cfg->offline_mode && album_count > 0) {
+                delete_confirm_album_id = albums[album_selected].rating_key;
+                delete_confirm_active   = true;
+                dirty = 1;
             }
 
             /* Poll art async */
@@ -1679,7 +1729,11 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      "SELECT", "BACK", 1);
                 if (!cfg->offline_mode)
                     GFX_blitButtonGroup((char*[]){"Y", "DOWNLOAD", NULL}, 0, screen, 0);
+                else if (album_count > 0)
+                    GFX_blitButtonGroup((char*[]){"Y", "DELETE", NULL}, 0, screen, 0);
                 GFX_blitButtonGroup((char*[]){"L2", "PREV", "R2", "NEXT", NULL}, 0, screen, 0);
+                if (delete_confirm_active)
+                    render_delete_confirm_dialog(screen);
                 GFX_flip(screen);
                 dirty = 0;
             } else {
@@ -1875,7 +1929,21 @@ AppModule module_browse_run(SDL_Surface *screen)
             if (PAD_justPressed(BTN_DOWN)) s_hold_down_since = SDL_GetTicks();
 
             /* Input */
-            if (PAD_justRepeated(BTN_UP)) {
+            if (delete_confirm_active) {
+                if (PAD_justPressed(BTN_A)) {
+                    plex_downloads_delete_album(delete_confirm_album_id);
+                    all_albums_loaded = plex_downloads_get_all_albums(s_all_albums, s_all_albums_cap);
+                    all_albums_total  = all_albums_loaded;
+                    if (all_albums_loaded > 0 && all_album_selected >= all_albums_loaded)
+                        all_album_selected = all_albums_loaded - 1;
+                    delete_confirm_active = false;
+                    plex_art_clear();
+                    last_art_thumb[0] = '\0';
+                } else if (PAD_justPressed(BTN_B)) {
+                    delete_confirm_active = false;
+                }
+                dirty = 1;
+            } else if (PAD_justRepeated(BTN_UP)) {
                 int step = scroll_step(s_hold_up_since);
                 int prev = all_album_selected;
                 all_album_selected = (all_album_selected >= step) ? all_album_selected - step : 0;
@@ -1998,6 +2066,11 @@ AppModule module_browse_run(SDL_Surface *screen)
                     s_all_albums[all_album_selected].thumb,
                     s_all_albums[all_album_selected].year);
                 dirty = 1;
+            } else if (PAD_justPressed(BTN_Y) && cfg->offline_mode
+                       && all_albums_loaded > 0 && all_album_selected < all_albums_loaded) {
+                delete_confirm_album_id = s_all_albums[all_album_selected].rating_key;
+                delete_confirm_active   = true;
+                dirty = 1;
             }
 
             /* Poll art async */
@@ -2026,7 +2099,11 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      "SELECT", "BACK", 1);
                 if (!cfg->offline_mode)
                     GFX_blitButtonGroup((char*[]){"Y", "DOWNLOAD", NULL}, 0, screen, 0);
+                else if (all_albums_loaded > 0)
+                    GFX_blitButtonGroup((char*[]){"Y", "DELETE", NULL}, 0, screen, 0);
                 GFX_blitButtonGroup((char*[]){"L2", "PREV", "R2", "NEXT", NULL}, 0, screen, 0);
+                if (delete_confirm_active)
+                    render_delete_confirm_dialog(screen);
                 GFX_flip(screen);
                 dirty = 0;
             } else {

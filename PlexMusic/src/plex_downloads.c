@@ -911,6 +911,40 @@ int plex_downloads_get_all_albums(PlexAlbum *out, int out_max)
     return n;
 }
 
+void plex_downloads_delete_album(int album_id)
+{
+    pthread_mutex_lock(&g_mutex);
+
+    int idx = -1;
+    for (int i = 0; i < g_album_count; i++) {
+        if (g_albums[i].album_id == album_id) { idx = i; break; }
+    }
+    if (idx < 0) { pthread_mutex_unlock(&g_mutex); return; }
+
+    ManifestAlbum *ma = &g_albums[idx];
+
+    /* Delete track files */
+    for (int j = 0; j < ma->track_count; j++)
+        remove(ma->tracks[j].local_path);
+
+    /* Remove album directory (best-effort; may fail if non-empty) */
+    char base[512];
+    downloads_base_dir(base, sizeof(base));
+    char album_dir[640];
+    snprintf(album_dir, sizeof(album_dir), "%s/%d", base, album_id);
+    rmdir(album_dir);
+
+    /* Remove from manifest array */
+    if (idx < g_album_count - 1)
+        memmove(&g_albums[idx], &g_albums[idx + 1],
+                (g_album_count - idx - 1) * sizeof(ManifestAlbum));
+    g_album_count--;
+
+    manifest_save_locked();
+
+    pthread_mutex_unlock(&g_mutex);
+}
+
 int plex_downloads_get_tracks_for_album(int album_id,
                                         PlexTrack *out, int out_max)
 {
