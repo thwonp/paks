@@ -16,4 +16,11 @@
  */
 AppModule module_player_run(SDL_Surface *screen);
 
+/*
+ * Called once per frame from the browse module's main loop while BG_MUSIC
+ * is active.  Handles background download completion, scrobbling, and
+ * auto-advance to the next track.  Must not block.
+ */
+void PlayerModule_backgroundTick(void);
+
 #endif /* MODULE_PLAYER_H */

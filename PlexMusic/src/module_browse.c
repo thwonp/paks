@@ -807,6 +807,8 @@ AppModule module_browse_run(SDL_Surface *screen)
         GFX_startFrame();
         PAD_poll();
 
+        Background_tick();
+
         /* Redraw every frame while a download is in progress */
         if (plex_downloads_is_active()) dirty = 1;
 

@@ -548,7 +548,8 @@ void plex_api_timeline(const PlexConfig *cfg, int rating_key,
         .method      = PLEX_HTTP_GET,
         .body        = NULL,
         .token       = cfg->token,
-        .timeout_sec = 5
+        .timeout_sec = 5,
+        .no_persist  = true
     };
 
     plex_net_fetch(url, buf, 4096, &opts);  /* ignore errors */
@@ -580,7 +581,8 @@ void plex_api_scrobble(const PlexConfig *cfg, int rating_key)
         .method      = PLEX_HTTP_GET,
         .body        = NULL,
         .token       = cfg->token,
-        .timeout_sec = 5
+        .timeout_sec = 5,
+        .no_persist  = true
     };
 
     plex_net_fetch(url, buf, 4096, &opts);  /* ignore errors */

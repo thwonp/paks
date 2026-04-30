@@ -1,7 +1,6 @@
 #include "background.h"
+#include "module_player.h"
 #include "player.h"
-
-/* TODO: wire PlayerModule_backgroundTick in task 008 */
 
 static BackgroundPlayerType active_bg = BG_NONE;
 
@@ -37,7 +36,7 @@ bool Background_isPlaying(void) {
 void Background_tick(void) {
     switch (active_bg) {
         case BG_MUSIC:
-            /* TODO: wire PlayerModule_backgroundTick in task 008 */
+            PlayerModule_backgroundTick();
             break;
         case BG_NONE:
             break;

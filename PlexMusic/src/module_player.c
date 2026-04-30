@@ -126,6 +126,26 @@ typedef struct {
     PlexNetOptions    opts;
 } DownloadCtx;
 
+/* ------------------------------------------------------------------
+ * Module-level playback state — survives module_player_run() returning
+ * so that background playback and auto-advance work correctly.
+ * ------------------------------------------------------------------ */
+
+typedef struct {
+    DownloadCtx  dl_ctx;
+    pthread_t    dl_thread;
+    bool         dl_thread_running;  /* true when thread is joinable */
+    bool         download_pending;   /* file is still growing (progressive playback) */
+    char         temp_path[768];
+    char         ext[16];
+    bool         is_local_file;
+    bool         scrobbled;
+    uint32_t     last_timeline_ms;
+    int          transcode;          /* cfg->stream_bitrate_kbps > 0 at track-start time */
+} PlayerModuleState;
+
+static PlayerModuleState s_state;
+
 static void *download_worker(void *arg)
 {
     DownloadCtx *ctx = (DownloadCtx *)arg;
@@ -389,55 +409,53 @@ static void start_download(DownloadCtx *ctx, pthread_t *thread,
 
 /* ------------------------------------------------------------------
  * Load the track at the current queue index (after plex_queue_next/prev
- * has already been called).  Updates is_local_file, ext, temp_path,
- * starts a download or plays the local file directly.
+ * has already been called).  Updates s_state fields, starts a download
+ * or plays the local file directly.
  * Caller must have stopped/joined any previous download and called
  * Player_stop() before invoking this.
+ * screen_state may be NULL when called from background tick (no screen).
  * ------------------------------------------------------------------ */
 
-static void load_next_track(PlexQueue *queue, bool *is_local_file,
-                             char *ext, int ext_size,
-                             char *temp_path, int temp_path_size,
-                             DownloadCtx *dl_ctx, pthread_t *dl_thread,
-                             bool *download_pending, bool *scrobbled,
-                             uint32_t *last_timeline_ms,
-                             PlayerScreenState *screen_state,
-                             int transcode)
+static void load_next_track(PlexQueue *queue,
+                             PlayerScreenState *screen_state)
 {
-    *is_local_file = (queue->tracks[queue->current_index].local_path[0] != '\0');
+    s_state.is_local_file = (queue->tracks[queue->current_index].local_path[0] != '\0');
 
-    if (*is_local_file) {
-        strncpy(temp_path, queue->tracks[queue->current_index].local_path,
-                temp_path_size - 1);
-        temp_path[temp_path_size - 1] = '\0';
-        ext[0] = '\0';
+    if (s_state.is_local_file) {
+        strncpy(s_state.temp_path, queue->tracks[queue->current_index].local_path,
+                sizeof(s_state.temp_path) - 1);
+        s_state.temp_path[sizeof(s_state.temp_path) - 1] = '\0';
+        s_state.ext[0] = '\0';
     } else {
-        if (transcode)
-            strncpy(ext, "opus", ext_size - 1);
+        if (s_state.transcode)
+            strncpy(s_state.ext, "opus", sizeof(s_state.ext) - 1);
         else
-            extract_ext(queue->tracks[queue->current_index].media_key, ext, ext_size);
-        ext[ext_size - 1] = '\0';
-        build_temp_path(ext, temp_path, temp_path_size);
+            extract_ext(queue->tracks[queue->current_index].media_key,
+                        s_state.ext, sizeof(s_state.ext));
+        s_state.ext[sizeof(s_state.ext) - 1] = '\0';
+        build_temp_path(s_state.ext, s_state.temp_path, sizeof(s_state.temp_path));
     }
 
-    *download_pending = false;
+    s_state.download_pending = false;
 
-    if (*is_local_file) {
+    if (s_state.is_local_file) {
         Player_setFileGrowing(false);
-        if (Player_load(temp_path) == 0) {
+        if (Player_load(s_state.temp_path) == 0) {
             Player_play();
-            *screen_state = PLAYER_SCREEN_PLAYING;
+            if (screen_state) *screen_state = PLAYER_SCREEN_PLAYING;
         } else {
-            PLEX_LOG_ERROR("[Player] Player_load failed (offline): %s\n", temp_path);
-            *screen_state = PLAYER_SCREEN_ERROR;
+            PLEX_LOG_ERROR("[Player] Player_load failed (offline): %s\n", s_state.temp_path);
+            if (screen_state) *screen_state = PLAYER_SCREEN_ERROR;
         }
     } else {
-        start_download(dl_ctx, dl_thread, queue, temp_path);
-        *screen_state = PLAYER_SCREEN_DOWNLOADING;
+        memset(&s_state.dl_ctx, 0, sizeof(s_state.dl_ctx));
+        start_download(&s_state.dl_ctx, &s_state.dl_thread, queue, s_state.temp_path);
+        s_state.dl_thread_running = true;
+        if (screen_state) *screen_state = PLAYER_SCREEN_DOWNLOADING;
     }
 
-    *scrobbled        = false;
-    *last_timeline_ms = SDL_GetTicks();
+    s_state.scrobbled        = false;
+    s_state.last_timeline_ms = SDL_GetTicks();
 }
 
 /* ------------------------------------------------------------------
@@ -454,71 +472,78 @@ AppModule module_player_run(SDL_Surface *screen)
         return MODULE_BROWSE;
     }
 
-    /* Build temp file path (or use local path for offline tracks) */
-    char ext[16];
-    char temp_path[768];
-    bool is_local_file = (queue->tracks[queue->current_index].local_path[0] != '\0');
-    if (is_local_file) {
-        strncpy(temp_path, queue->tracks[queue->current_index].local_path,
-                sizeof(temp_path) - 1);
-        temp_path[sizeof(temp_path) - 1] = '\0';
-        ext[0] = '\0';
-    } else {
-        if (cfg->stream_bitrate_kbps > 0)
-            strncpy(ext, "opus", sizeof(ext) - 1);
-        else
-            extract_ext(queue->tracks[queue->current_index].media_key, ext, sizeof(ext));
-        ext[sizeof(ext) - 1] = '\0';
-        build_temp_path(ext, temp_path, sizeof(temp_path));
-    }
-
     PlayerScreenState screen_state = PLAYER_SCREEN_DOWNLOADING;
-
-    /* Scrobble tracking */
-    bool     scrobbled          = false;
-    uint32_t last_timeline_ms   = 0;
-
-    /* Progressive playback: true while playing a file that's still downloading */
-    bool download_pending = false;
 
     /* Re-entry with background active: skip download, resume UI */
     if (Background_getActive() == BG_MUSIC && Player_getState() != PLAYER_STATE_STOPPED) {
-        screen_state     = PLAYER_SCREEN_PLAYING;
-        scrobbled        = false;
-        last_timeline_ms = SDL_GetTicks();
+        screen_state              = PLAYER_SCREEN_PLAYING;
+        s_state.scrobbled         = false;
+        s_state.last_timeline_ms  = SDL_GetTicks();
         plex_art_fetch(cfg, queue->tracks[queue->current_index].thumb);
+        /* s_state.download_pending is already correct from before B-press */
         /* fall through to main loop with PLAYER_SCREEN_PLAYING */
     } else {
-        /* Normal entry: fetch cover art and start download.
+        /* Normal entry: cancel any stale background download first */
+        if (s_state.dl_thread_running) {
+            s_state.dl_ctx.should_cancel = true;
+            Player_setFileGrowing(false);
+            pthread_join(s_state.dl_thread, NULL);
+            s_state.dl_thread_running = false;
+            if (!s_state.is_local_file) remove(s_state.temp_path);
+            s_state.download_pending = false;
+        }
+
+        /* Fetch cover art and start download.
          * Clear any stale BG_MUSIC state immediately so that if the user
          * cancels the download (B-press) or hits an error, browse will not
          * show a stale "Now Playing" item. */
         Background_setActive(BG_NONE);
         plex_art_fetch(cfg, queue->tracks[queue->current_index].thumb);
-    }
 
-    int           dirty = 1;
-    int           show_setting = 0;
-    pthread_t     dl_thread;
-    DownloadCtx   dl_ctx;
-    memset(&dl_ctx, 0, sizeof(dl_ctx));
-    if (screen_state == PLAYER_SCREEN_DOWNLOADING) {
-        if (is_local_file) {
-            PLEX_LOG("[Player] Loading offline file: %s\n", temp_path);
+        /* Populate s_state fields for the new track */
+        s_state.transcode     = (cfg->stream_bitrate_kbps > 0);
+        s_state.is_local_file = (queue->tracks[queue->current_index].local_path[0] != '\0');
+        if (s_state.is_local_file) {
+            strncpy(s_state.temp_path, queue->tracks[queue->current_index].local_path,
+                    sizeof(s_state.temp_path) - 1);
+            s_state.temp_path[sizeof(s_state.temp_path) - 1] = '\0';
+            s_state.ext[0] = '\0';
+        } else {
+            if (s_state.transcode)
+                strncpy(s_state.ext, "opus", sizeof(s_state.ext) - 1);
+            else
+                extract_ext(queue->tracks[queue->current_index].media_key,
+                            s_state.ext, sizeof(s_state.ext));
+            s_state.ext[sizeof(s_state.ext) - 1] = '\0';
+            build_temp_path(s_state.ext, s_state.temp_path, sizeof(s_state.temp_path));
+        }
+
+        s_state.download_pending   = false;
+        s_state.dl_thread_running  = false;
+        s_state.scrobbled          = false;
+        s_state.last_timeline_ms   = 0;
+
+        if (s_state.is_local_file) {
+            PLEX_LOG("[Player] Loading offline file: %s\n", s_state.temp_path);
             Player_setFileGrowing(false);
-            if (Player_load(temp_path) == 0) {
+            if (Player_load(s_state.temp_path) == 0) {
                 Player_play();
-                scrobbled        = false;
-                last_timeline_ms = SDL_GetTicks();
-                screen_state     = PLAYER_SCREEN_PLAYING;
+                s_state.scrobbled        = false;
+                s_state.last_timeline_ms = SDL_GetTicks();
+                screen_state             = PLAYER_SCREEN_PLAYING;
             } else {
-                PLEX_LOG_ERROR("[Player] Player_load failed (offline): %s\n", temp_path);
+                PLEX_LOG_ERROR("[Player] Player_load failed (offline): %s\n", s_state.temp_path);
                 screen_state = PLAYER_SCREEN_ERROR;
             }
         } else {
-            start_download(&dl_ctx, &dl_thread, queue, temp_path);
+            memset(&s_state.dl_ctx, 0, sizeof(s_state.dl_ctx));
+            start_download(&s_state.dl_ctx, &s_state.dl_thread, queue, s_state.temp_path);
+            s_state.dl_thread_running = true;
         }
     }
+
+    int dirty       = 1;
+    int show_setting = 0;
 
     /* Sleep state init */
     s_screen_sleeping  = false;
@@ -568,33 +593,35 @@ AppModule module_player_run(SDL_Surface *screen)
         if (screen_state == PLAYER_SCREEN_DOWNLOADING) {
 
             /* Check for thread completion */
-            if (dl_ctx.download_done) {
-                pthread_join(dl_thread, NULL);
-                download_pending = false;
+            if (s_state.dl_ctx.download_done) {
+                pthread_join(s_state.dl_thread, NULL);
+                s_state.dl_thread_running = false;
+                s_state.download_pending  = false;
 
                 /* Load and play */
                 Player_stop();
-                if (Player_load(temp_path) == 0) {
-                    if (cfg->stream_bitrate_kbps > 0) {
+                if (Player_load(s_state.temp_path) == 0) {
+                    if (s_state.transcode) {
                         int dur = queue->tracks[queue->current_index].duration_ms;
                         Player_setTotalFrames((int64_t)((dur / 1000.0) * 48000.0));
                     }
                     Player_play();
-                    scrobbled        = false;
-                    last_timeline_ms = SDL_GetTicks();
-                    screen_state     = PLAYER_SCREEN_PLAYING;
-                    dirty            = 1;
+                    s_state.scrobbled        = false;
+                    s_state.last_timeline_ms = SDL_GetTicks();
+                    screen_state             = PLAYER_SCREEN_PLAYING;
+                    dirty                    = 1;
                 } else {
-                    if (!is_local_file) remove(temp_path);
-                    PLEX_LOG_ERROR("[Player] Player_load failed: %s\n", temp_path);
+                    if (!s_state.is_local_file) remove(s_state.temp_path);
+                    PLEX_LOG_ERROR("[Player] Player_load failed: %s\n", s_state.temp_path);
                     screen_state = PLAYER_SCREEN_ERROR;
                     dirty        = 1;
                 }
                 goto render;
             }
 
-            if (dl_ctx.download_failed) {
-                pthread_join(dl_thread, NULL);
+            if (s_state.dl_ctx.download_failed) {
+                pthread_join(s_state.dl_thread, NULL);
+                s_state.dl_thread_running = false;
                 screen_state = PLAYER_SCREEN_ERROR;
                 dirty        = 1;
                 goto render;
@@ -604,27 +631,27 @@ AppModule module_player_run(SDL_Surface *screen)
              * MP3/FLAC/WAV/M4A: total_frames is header-derived, safe on partial files.
              * Opus (transcoded): total_frames is overridden via Player_setTotalFrames using
              * Plex-provided duration, so it is also safe for early-start. */
-            if (!download_pending
-                    && (strcasecmp(ext, "mp3") == 0
-                        || strcasecmp(ext, "flac") == 0
-                        || strcasecmp(ext, "wav") == 0
-                        || strcasecmp(ext, "m4a") == 0
-                        || strcasecmp(ext, "opus") == 0)) {
+            if (!s_state.download_pending
+                    && (strcasecmp(s_state.ext, "mp3") == 0
+                        || strcasecmp(s_state.ext, "flac") == 0
+                        || strcasecmp(s_state.ext, "wav") == 0
+                        || strcasecmp(s_state.ext, "m4a") == 0
+                        || strcasecmp(s_state.ext, "opus") == 0)) {
                 struct stat st;
-                if (stat(temp_path, &st) == 0 && st.st_size >= PREBUFFER_BYTES) {
+                if (stat(s_state.temp_path, &st) == 0 && st.st_size >= PREBUFFER_BYTES) {
                     Player_stop();
-                    if (Player_load(temp_path) == 0) {
-                        if (cfg->stream_bitrate_kbps > 0) {
+                    if (Player_load(s_state.temp_path) == 0) {
+                        if (s_state.transcode) {
                             int dur = queue->tracks[queue->current_index].duration_ms;
                             Player_setTotalFrames((int64_t)((dur / 1000.0) * 48000.0));
                         }
                         Player_setFileGrowing(true);
                         Player_play();
-                        download_pending    = true;
-                        scrobbled           = false;
-                        last_timeline_ms    = SDL_GetTicks();
-                        screen_state        = PLAYER_SCREEN_PLAYING;
-                        dirty               = 1;
+                        s_state.download_pending    = true;
+                        s_state.scrobbled           = false;
+                        s_state.last_timeline_ms    = SDL_GetTicks();
+                        screen_state                = PLAYER_SCREEN_PLAYING;
+                        dirty                       = 1;
                         goto render;
                     }
                     /* Player_load failed (e.g. M4A moov at end) — fall through to full download */
@@ -635,10 +662,11 @@ AppModule module_player_run(SDL_Surface *screen)
 
             /* Input during download */
             if (PAD_justPressed(BTN_B)) {
-                if (!is_local_file) {
-                    dl_ctx.should_cancel = true;
-                    pthread_join(dl_thread, NULL);
-                    remove(temp_path);
+                if (!s_state.is_local_file) {
+                    s_state.dl_ctx.should_cancel = true;
+                    pthread_join(s_state.dl_thread, NULL);
+                    s_state.dl_thread_running = false;
+                    remove(s_state.temp_path);
                 }
                 Player_stop();
                 if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
@@ -646,10 +674,11 @@ AppModule module_player_run(SDL_Surface *screen)
             }
             /* Start long-press to quit */
             if (PAD_justPressed(BTN_START)) {
-                if (!is_local_file) {
-                    dl_ctx.should_cancel = true;
-                    pthread_join(dl_thread, NULL);
-                    remove(temp_path);
+                if (!s_state.is_local_file) {
+                    s_state.dl_ctx.should_cancel = true;
+                    pthread_join(s_state.dl_thread, NULL);
+                    s_state.dl_thread_running = false;
+                    remove(s_state.temp_path);
                 }
                 Player_stop();
                 if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
@@ -662,15 +691,17 @@ AppModule module_player_run(SDL_Surface *screen)
          * ==================================================== */
         else if (screen_state == PLAYER_SCREEN_PLAYING) {
             /* Background download finished while we were already playing */
-            if (download_pending) {
-                if (dl_ctx.download_done) {
-                    pthread_join(dl_thread, NULL);
+            if (s_state.download_pending) {
+                if (s_state.dl_ctx.download_done) {
+                    pthread_join(s_state.dl_thread, NULL);
+                    s_state.dl_thread_running = false;
                     Player_setFileGrowing(false);
-                    download_pending = false;
-                } else if (dl_ctx.download_failed) {
-                    pthread_join(dl_thread, NULL);
+                    s_state.download_pending = false;
+                } else if (s_state.dl_ctx.download_failed) {
+                    pthread_join(s_state.dl_thread, NULL);
+                    s_state.dl_thread_running = false;
                     Player_setFileGrowing(false);
-                    download_pending = false;
+                    s_state.download_pending = false;
                     /* Track may stop early if download failed; user can press Next */
                 }
             }
@@ -680,14 +711,17 @@ AppModule module_player_run(SDL_Surface *screen)
             /* Auto-advance on track end */
             if (Player_getState() == PLAYER_STATE_STOPPED) {
                 Background_setActive(BG_NONE);
-                if (download_pending) {
-                    dl_ctx.should_cancel = true;
+                /* download_pending should be false here (handled above), but
+                 * guard anyway */
+                if (s_state.download_pending) {
+                    s_state.dl_ctx.should_cancel = true;
                     Player_setFileGrowing(false);
-                    pthread_join(dl_thread, NULL);
-                    download_pending = false;
+                    pthread_join(s_state.dl_thread, NULL);
+                    s_state.dl_thread_running = false;
+                    s_state.download_pending  = false;
                 }
                 Player_stop();
-                if (!is_local_file) remove(temp_path);
+                if (!s_state.is_local_file) remove(s_state.temp_path);
 
                 if (plex_queue_has_next()) {
                     plex_queue_next(cfg);
@@ -695,13 +729,8 @@ AppModule module_player_run(SDL_Surface *screen)
                     plex_art_clear();
                     plex_art_fetch(cfg, queue->tracks[queue->current_index].thumb);
 
-                    load_next_track(queue, &is_local_file,
-                                    ext, sizeof(ext),
-                                    temp_path, sizeof(temp_path),
-                                    &dl_ctx, &dl_thread,
-                                    &download_pending, &scrobbled,
-                                    &last_timeline_ms, &screen_state,
-                                    cfg->stream_bitrate_kbps > 0);
+                    s_state.transcode = (cfg->stream_bitrate_kbps > 0);
+                    load_next_track(queue, &screen_state);
                     dirty = 1;
                     goto render;
                 } else {
@@ -717,21 +746,21 @@ AppModule module_player_run(SDL_Surface *screen)
             int      dur_ms  = Player_getDuration();
 
             if (Player_getState() == PLAYER_STATE_PLAYING) {
-                if (now_ms - last_timeline_ms >= TIMELINE_INTERVAL_MS) {
+                if (now_ms - s_state.last_timeline_ms >= TIMELINE_INTERVAL_MS) {
                     if (dur_ms > 0) {
                         fire_scrobble(cfg,
                                       queue->tracks[queue->current_index].rating_key,
                                       "playing", pos_ms, dur_ms, false);
                     }
-                    last_timeline_ms = now_ms;
+                    s_state.last_timeline_ms = now_ms;
                 }
 
-                if (!scrobbled && dur_ms > 0 &&
+                if (!s_state.scrobbled && dur_ms > 0 &&
                     (float)pos_ms / (float)dur_ms >= SCROBBLE_THRESHOLD) {
                     fire_scrobble(cfg,
                                   queue->tracks[queue->current_index].rating_key,
                                   NULL, 0, 0, true);
-                    scrobbled = true;
+                    s_state.scrobbled = true;
                 }
             }
 
@@ -743,12 +772,7 @@ AppModule module_player_run(SDL_Surface *screen)
                 dirty = 1;
             }
             else if (PAD_justPressed(BTN_B)) {
-                if (download_pending) {
-                    dl_ctx.should_cancel = true;
-                    Player_setFileGrowing(false);
-                    pthread_join(dl_thread, NULL);
-                    download_pending = false;
-                }
+                /* Do NOT cancel download — let it continue in the background */
                 /* Keep playing in background, return to browse */
                 Background_setActive(BG_MUSIC);
                 if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
@@ -761,14 +785,15 @@ AppModule module_player_run(SDL_Surface *screen)
                               "stopped", Player_getPosition(),
                               Player_getDuration(), false);
                 Background_setActive(BG_NONE);
-                if (download_pending) {
-                    dl_ctx.should_cancel = true;
+                if (s_state.download_pending) {
+                    s_state.dl_ctx.should_cancel = true;
                     Player_setFileGrowing(false);
-                    pthread_join(dl_thread, NULL);
-                    download_pending = false;
+                    pthread_join(s_state.dl_thread, NULL);
+                    s_state.dl_thread_running = false;
+                    s_state.download_pending  = false;
                 }
                 Player_stop();
-                if (!is_local_file) remove(temp_path);
+                if (!s_state.is_local_file) remove(s_state.temp_path);
                 if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
                 return MODULE_QUIT;
             }
@@ -781,31 +806,29 @@ AppModule module_player_run(SDL_Surface *screen)
                     Background_setActive(BG_NONE);
 
                     /* Capture old path info before advancing queue. */
-                    bool old_is_local = is_local_file;
+                    bool old_is_local = s_state.is_local_file;
                     char old_temp_path[768];
-                    strncpy(old_temp_path, temp_path, sizeof(old_temp_path) - 1);
+                    strncpy(old_temp_path, s_state.temp_path, sizeof(old_temp_path) - 1);
                     old_temp_path[sizeof(old_temp_path) - 1] = '\0';
 
-                    /* Advance queue and build new paths so we can render first. */
+                    /* Advance queue and update s_state paths for render. */
                     plex_queue_prev(cfg);
 
-                    /* Update is_local_file and temp_path for new track temporarily
-                     * so the render call shows the correct title. */
-                    is_local_file = (queue->tracks[queue->current_index].local_path[0] != '\0');
-                    if (is_local_file) {
-                        strncpy(temp_path,
+                    s_state.is_local_file = (queue->tracks[queue->current_index].local_path[0] != '\0');
+                    if (s_state.is_local_file) {
+                        strncpy(s_state.temp_path,
                                 queue->tracks[queue->current_index].local_path,
-                                sizeof(temp_path) - 1);
-                        temp_path[sizeof(temp_path) - 1] = '\0';
-                        ext[0] = '\0';
+                                sizeof(s_state.temp_path) - 1);
+                        s_state.temp_path[sizeof(s_state.temp_path) - 1] = '\0';
+                        s_state.ext[0] = '\0';
                     } else {
                         if (cfg->stream_bitrate_kbps > 0)
-                            strncpy(ext, "opus", sizeof(ext) - 1);
+                            strncpy(s_state.ext, "opus", sizeof(s_state.ext) - 1);
                         else
                             extract_ext(queue->tracks[queue->current_index].media_key,
-                                        ext, sizeof(ext));
-                        ext[sizeof(ext) - 1] = '\0';
-                        build_temp_path(ext, temp_path, sizeof(temp_path));
+                                        s_state.ext, sizeof(s_state.ext));
+                        s_state.ext[sizeof(s_state.ext) - 1] = '\0';
+                        build_temp_path(s_state.ext, s_state.temp_path, sizeof(s_state.temp_path));
                     }
 
                     plex_art_clear();
@@ -816,22 +839,18 @@ AppModule module_player_run(SDL_Surface *screen)
                                        &queue->tracks[queue->current_index], 0);
 
                     /* Now do the blocking stop/join behind the visible frame. */
-                    if (download_pending) {
-                        dl_ctx.should_cancel = true;
+                    if (s_state.download_pending) {
+                        s_state.dl_ctx.should_cancel = true;
                         Player_setFileGrowing(false);
-                        pthread_join(dl_thread, NULL);
-                        download_pending = false;
+                        pthread_join(s_state.dl_thread, NULL);
+                        s_state.dl_thread_running = false;
+                        s_state.download_pending  = false;
                     }
                     Player_stop();
                     if (!old_is_local) remove(old_temp_path);
 
-                    load_next_track(queue, &is_local_file,
-                                    ext, sizeof(ext),
-                                    temp_path, sizeof(temp_path),
-                                    &dl_ctx, &dl_thread,
-                                    &download_pending, &scrobbled,
-                                    &last_timeline_ms, &screen_state,
-                                    cfg->stream_bitrate_kbps > 0);
+                    s_state.transcode = (cfg->stream_bitrate_kbps > 0);
+                    load_next_track(queue, &screen_state);
                     dirty = 1;
                 }
             }
@@ -844,31 +863,29 @@ AppModule module_player_run(SDL_Surface *screen)
                     Background_setActive(BG_NONE);
 
                     /* Capture old path info before advancing queue. */
-                    bool old_is_local = is_local_file;
+                    bool old_is_local = s_state.is_local_file;
                     char old_temp_path[768];
-                    strncpy(old_temp_path, temp_path, sizeof(old_temp_path) - 1);
+                    strncpy(old_temp_path, s_state.temp_path, sizeof(old_temp_path) - 1);
                     old_temp_path[sizeof(old_temp_path) - 1] = '\0';
 
-                    /* Advance queue and build new paths so we can render first. */
+                    /* Advance queue and update s_state paths for render. */
                     plex_queue_next(cfg);
 
-                    /* Update is_local_file and temp_path for new track temporarily
-                     * so the render call shows the correct title. */
-                    is_local_file = (queue->tracks[queue->current_index].local_path[0] != '\0');
-                    if (is_local_file) {
-                        strncpy(temp_path,
+                    s_state.is_local_file = (queue->tracks[queue->current_index].local_path[0] != '\0');
+                    if (s_state.is_local_file) {
+                        strncpy(s_state.temp_path,
                                 queue->tracks[queue->current_index].local_path,
-                                sizeof(temp_path) - 1);
-                        temp_path[sizeof(temp_path) - 1] = '\0';
-                        ext[0] = '\0';
+                                sizeof(s_state.temp_path) - 1);
+                        s_state.temp_path[sizeof(s_state.temp_path) - 1] = '\0';
+                        s_state.ext[0] = '\0';
                     } else {
                         if (cfg->stream_bitrate_kbps > 0)
-                            strncpy(ext, "opus", sizeof(ext) - 1);
+                            strncpy(s_state.ext, "opus", sizeof(s_state.ext) - 1);
                         else
                             extract_ext(queue->tracks[queue->current_index].media_key,
-                                        ext, sizeof(ext));
-                        ext[sizeof(ext) - 1] = '\0';
-                        build_temp_path(ext, temp_path, sizeof(temp_path));
+                                        s_state.ext, sizeof(s_state.ext));
+                        s_state.ext[sizeof(s_state.ext) - 1] = '\0';
+                        build_temp_path(s_state.ext, s_state.temp_path, sizeof(s_state.temp_path));
                     }
 
                     plex_art_clear();
@@ -879,22 +896,18 @@ AppModule module_player_run(SDL_Surface *screen)
                                        &queue->tracks[queue->current_index], 0);
 
                     /* Now do the blocking stop/join behind the visible frame. */
-                    if (download_pending) {
-                        dl_ctx.should_cancel = true;
+                    if (s_state.download_pending) {
+                        s_state.dl_ctx.should_cancel = true;
                         Player_setFileGrowing(false);
-                        pthread_join(dl_thread, NULL);
-                        download_pending = false;
+                        pthread_join(s_state.dl_thread, NULL);
+                        s_state.dl_thread_running = false;
+                        s_state.download_pending  = false;
                     }
                     Player_stop();
                     if (!old_is_local) remove(old_temp_path);
 
-                    load_next_track(queue, &is_local_file,
-                                    ext, sizeof(ext),
-                                    temp_path, sizeof(temp_path),
-                                    &dl_ctx, &dl_thread,
-                                    &download_pending, &scrobbled,
-                                    &last_timeline_ms, &screen_state,
-                                    cfg->stream_bitrate_kbps > 0);
+                    s_state.transcode = (cfg->stream_bitrate_kbps > 0);
+                    load_next_track(queue, &screen_state);
                     dirty = 1;
                 }
             }
@@ -917,38 +930,40 @@ AppModule module_player_run(SDL_Surface *screen)
                 /* Retry: restart download (or reload local file) for current track */
                 plex_art_clear();
                 plex_art_fetch(cfg, queue->tracks[queue->current_index].thumb);
-                is_local_file = (queue->tracks[queue->current_index].local_path[0] != '\0');
-                if (is_local_file) {
-                    strncpy(temp_path, queue->tracks[queue->current_index].local_path,
-                            sizeof(temp_path) - 1);
-                    temp_path[sizeof(temp_path) - 1] = '\0';
-                    ext[0] = '\0';
+                s_state.is_local_file = (queue->tracks[queue->current_index].local_path[0] != '\0');
+                if (s_state.is_local_file) {
+                    strncpy(s_state.temp_path, queue->tracks[queue->current_index].local_path,
+                            sizeof(s_state.temp_path) - 1);
+                    s_state.temp_path[sizeof(s_state.temp_path) - 1] = '\0';
+                    s_state.ext[0] = '\0';
                     Player_setFileGrowing(false);
-                    if (Player_load(temp_path) == 0) {
+                    if (Player_load(s_state.temp_path) == 0) {
                         Player_play();
-                        scrobbled        = false;
-                        last_timeline_ms = SDL_GetTicks();
-                        screen_state     = PLAYER_SCREEN_PLAYING;
+                        s_state.scrobbled        = false;
+                        s_state.last_timeline_ms = SDL_GetTicks();
+                        screen_state             = PLAYER_SCREEN_PLAYING;
                     } else {
                         PLEX_LOG_ERROR("[Player] Player_load retry failed (offline): %s\n",
-                                       temp_path);
+                                       s_state.temp_path);
                         /* stay in ERROR state */
                     }
                 } else {
-                    if (cfg->stream_bitrate_kbps > 0)
-                        strncpy(ext, "opus", sizeof(ext) - 1);
+                    if (s_state.transcode)
+                        strncpy(s_state.ext, "opus", sizeof(s_state.ext) - 1);
                     else
                         extract_ext(queue->tracks[queue->current_index].media_key,
-                                    ext, sizeof(ext));
-                    ext[sizeof(ext) - 1] = '\0';
-                    build_temp_path(ext, temp_path, sizeof(temp_path));
-                    start_download(&dl_ctx, &dl_thread, queue, temp_path);
+                                    s_state.ext, sizeof(s_state.ext));
+                    s_state.ext[sizeof(s_state.ext) - 1] = '\0';
+                    build_temp_path(s_state.ext, s_state.temp_path, sizeof(s_state.temp_path));
+                    memset(&s_state.dl_ctx, 0, sizeof(s_state.dl_ctx));
+                    start_download(&s_state.dl_ctx, &s_state.dl_thread, queue, s_state.temp_path);
+                    s_state.dl_thread_running = true;
                     screen_state = PLAYER_SCREEN_DOWNLOADING;
                 }
                 dirty = 1;
             }
             else if (PAD_justPressed(BTN_B)) {
-                if (!is_local_file) remove(temp_path);
+                if (!s_state.is_local_file) remove(s_state.temp_path);
                 Player_stop();
                 if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
                 return MODULE_BROWSE;
@@ -961,7 +976,7 @@ render:
             if (screen_state == PLAYER_SCREEN_DOWNLOADING) {
                 render_downloading(screen,
                                    &queue->tracks[queue->current_index],
-                                   (int)dl_ctx.progress_pct);
+                                   (int)s_state.dl_ctx.progress_pct);
             } else if (screen_state == PLAYER_SCREEN_PLAYING) {
                 render_playing_screen(screen,
                                       &queue->tracks[queue->current_index]);
@@ -977,4 +992,172 @@ render:
     /* unreachable */
     Player_stop();
     return MODULE_BROWSE;
+}
+
+/* ------------------------------------------------------------------
+ * Background tick — called once per frame from the browse module's
+ * main loop while BG_MUSIC is active.  Must not block.
+ * ------------------------------------------------------------------ */
+
+void PlayerModule_backgroundTick(void)
+{
+    if (Background_getActive() != BG_MUSIC)
+        return;
+
+    /* Check if background download has finished */
+    if (s_state.dl_thread_running && s_state.download_pending) {
+        if (s_state.dl_ctx.download_done || s_state.dl_ctx.download_failed) {
+            pthread_join(s_state.dl_thread, NULL);
+            s_state.dl_thread_running = false;
+            Player_setFileGrowing(false);
+            s_state.download_pending = false;
+        }
+    }
+
+    /* Scrobble timeline while playing in background */
+    if (Player_getState() == PLAYER_STATE_PLAYING) {
+        const PlexConfig *cfg = plex_config_get_mutable();
+        PlexQueue        *queue = plex_queue_get();
+        if (cfg && queue && queue->active && queue->count > 0) {
+            uint32_t now_ms = SDL_GetTicks();
+            int      pos_ms = Player_getPosition();
+            int      dur_ms = Player_getDuration();
+
+            if (now_ms - s_state.last_timeline_ms >= TIMELINE_INTERVAL_MS) {
+                if (dur_ms > 0) {
+                    fire_scrobble(cfg,
+                                  queue->tracks[queue->current_index].rating_key,
+                                  "playing", pos_ms, dur_ms, false);
+                }
+                s_state.last_timeline_ms = now_ms;
+            }
+
+            if (!s_state.scrobbled && dur_ms > 0 &&
+                (float)pos_ms / (float)dur_ms >= SCROBBLE_THRESHOLD) {
+                fire_scrobble(cfg,
+                              queue->tracks[queue->current_index].rating_key,
+                              NULL, 0, 0, true);
+                s_state.scrobbled = true;
+            }
+        }
+    }
+
+    /* Auto-advance when track finishes and download is no longer pending */
+    if (Player_getState() == PLAYER_STATE_STOPPED && !s_state.download_pending
+            && !s_state.dl_thread_running) {
+        const PlexConfig *cfg = plex_config_get_mutable();
+        PlexQueue        *queue = plex_queue_get();
+
+        if (!cfg || !queue || !queue->active || queue->count == 0) {
+            Background_setActive(BG_NONE);
+            return;
+        }
+
+        if (!s_state.is_local_file) remove(s_state.temp_path);
+
+        if (plex_queue_has_next()) {
+            plex_queue_next(cfg);
+
+            plex_art_clear();
+            plex_art_fetch(cfg, queue->tracks[queue->current_index].thumb);
+
+            s_state.transcode = (cfg->stream_bitrate_kbps > 0);
+            s_state.is_local_file =
+                (queue->tracks[queue->current_index].local_path[0] != '\0');
+
+            if (s_state.is_local_file) {
+                strncpy(s_state.temp_path,
+                        queue->tracks[queue->current_index].local_path,
+                        sizeof(s_state.temp_path) - 1);
+                s_state.temp_path[sizeof(s_state.temp_path) - 1] = '\0';
+                s_state.ext[0] = '\0';
+                Player_setFileGrowing(false);
+                if (Player_load(s_state.temp_path) == 0) {
+                    Player_play();
+                } else {
+                    PLEX_LOG_ERROR("[Player] BG auto-advance: Player_load failed (offline): %s\n",
+                                   s_state.temp_path);
+                    Background_setActive(BG_NONE);
+                    return;
+                }
+                s_state.scrobbled        = false;
+                s_state.last_timeline_ms = SDL_GetTicks();
+            } else {
+                if (s_state.transcode)
+                    strncpy(s_state.ext, "opus", sizeof(s_state.ext) - 1);
+                else
+                    extract_ext(queue->tracks[queue->current_index].media_key,
+                                s_state.ext, sizeof(s_state.ext));
+                s_state.ext[sizeof(s_state.ext) - 1] = '\0';
+                build_temp_path(s_state.ext, s_state.temp_path, sizeof(s_state.temp_path));
+
+                memset(&s_state.dl_ctx, 0, sizeof(s_state.dl_ctx));
+                start_download(&s_state.dl_ctx, &s_state.dl_thread, queue, s_state.temp_path);
+                s_state.dl_thread_running = true;
+                s_state.scrobbled         = false;
+                s_state.last_timeline_ms  = SDL_GetTicks();
+            }
+        } else {
+            /* End of queue */
+            Background_setActive(BG_NONE);
+        }
+    }
+
+    /* Progressive playback start in background: watch for prebuffer threshold
+     * or full download completion while nothing is playing yet. */
+    if (s_state.dl_thread_running && !s_state.download_pending &&
+        Player_getState() == PLAYER_STATE_STOPPED) {
+
+        if (s_state.dl_ctx.download_done) {
+            /* Full download finished — load and play */
+            pthread_join(s_state.dl_thread, NULL);
+            s_state.dl_thread_running = false;
+            Player_setFileGrowing(false);
+
+            PlexQueue *queue = plex_queue_get();
+            if (Player_load(s_state.temp_path) == 0) {
+                if (s_state.transcode && queue && queue->active) {
+                    int dur = queue->tracks[queue->current_index].duration_ms;
+                    Player_setTotalFrames((int64_t)((dur / 1000.0) * 48000.0));
+                }
+                Player_play();
+                s_state.scrobbled        = false;
+                s_state.last_timeline_ms = SDL_GetTicks();
+            } else {
+                PLEX_LOG_ERROR("[Player] BG: Player_load failed after full download: %s\n",
+                               s_state.temp_path);
+                if (!s_state.is_local_file) remove(s_state.temp_path);
+                Background_setActive(BG_NONE);
+                return;
+            }
+        } else if (s_state.dl_ctx.download_failed) {
+            pthread_join(s_state.dl_thread, NULL);
+            s_state.dl_thread_running = false;
+            PLEX_LOG_ERROR("[Player] BG: download failed for background track\n");
+            Background_setActive(BG_NONE);
+        } else if (strcasecmp(s_state.ext, "mp3") == 0
+                   || strcasecmp(s_state.ext, "flac") == 0
+                   || strcasecmp(s_state.ext, "wav") == 0
+                   || strcasecmp(s_state.ext, "m4a") == 0
+                   || strcasecmp(s_state.ext, "opus") == 0) {
+            /* Try progressive start once prebuffer threshold is reached */
+            struct stat st;
+            if (stat(s_state.temp_path, &st) == 0 && st.st_size >= PREBUFFER_BYTES) {
+                PlexQueue *queue = plex_queue_get();
+                Player_stop();
+                if (Player_load(s_state.temp_path) == 0) {
+                    if (s_state.transcode && queue && queue->active) {
+                        int dur = queue->tracks[queue->current_index].duration_ms;
+                        Player_setTotalFrames((int64_t)((dur / 1000.0) * 48000.0));
+                    }
+                    Player_setFileGrowing(true);
+                    Player_play();
+                    s_state.download_pending = true;
+                    s_state.scrobbled        = false;
+                    s_state.last_timeline_ms = SDL_GetTicks();
+                }
+                /* If Player_load failed, wait for full download to complete */
+            }
+        }
+    }
 }
