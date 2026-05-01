@@ -157,6 +157,7 @@ typedef struct {
     bool         is_local_file;
     bool         scrobbled;
     uint32_t     last_timeline_ms;
+    uint32_t     play_start_ticks;
     int          transcode;          /* cfg->stream_bitrate_kbps > 0 at track-start time */
     PreloadSlot  preload[MAX_PRELOAD_SLOTS];
 } PlayerModuleState;
@@ -403,6 +404,7 @@ static bool preload_consume(const PlexConfig *cfg)
         Player_setFileGrowing(false);
         if (Player_load(s_state.temp_path) == 0) {
             Player_setDurationMs(t->duration_ms);
+            s_state.play_start_ticks = SDL_GetTicks();
             Player_play();
             s_state.scrobbled        = false;
             s_state.last_timeline_ms = SDL_GetTicks();
@@ -738,6 +740,7 @@ static void load_next_track(PlexQueue *queue,
     if (s_state.is_local_file) {
         Player_setFileGrowing(false);
         if (Player_load(s_state.temp_path) == 0) {
+            s_state.play_start_ticks = SDL_GetTicks();
             Player_play();
             if (screen_state) *screen_state = PLAYER_SCREEN_PLAYING;
         } else {
@@ -853,6 +856,7 @@ AppModule module_player_run(SDL_Surface *screen)
             PLEX_LOG("[Player] Loading offline file: %s\n", s_state.temp_path);
             Player_setFileGrowing(false);
             if (Player_load(s_state.temp_path) == 0) {
+                s_state.play_start_ticks = SDL_GetTicks();
                 Player_play();
                 s_state.scrobbled        = false;
                 s_state.last_timeline_ms = SDL_GetTicks();
@@ -951,6 +955,7 @@ AppModule module_player_run(SDL_Surface *screen)
                 pthread_join(s_state.dl_thread, NULL);
                 s_state.dl_thread_running = false;
                 s_state.download_pending  = false;
+                { struct stat _st; PLEX_LOG("[Player] full download DONE: file_size=%ld\n", stat(s_state.temp_path, &_st) == 0 ? (long)_st.st_size : -1L); }
 
                 /* Load and play */
                 Player_stop();
@@ -960,6 +965,7 @@ AppModule module_player_run(SDL_Surface *screen)
                         int dur = t ? t->duration_ms : 0;
                         if (dur > 0) Player_setTotalFrames((int64_t)((dur / 1000.0) * 48000.0));
                     }
+                    s_state.play_start_ticks = SDL_GetTicks();
                     Player_play();
                     s_state.scrobbled        = false;
                     s_state.last_timeline_ms = SDL_GetTicks();
@@ -977,6 +983,7 @@ AppModule module_player_run(SDL_Surface *screen)
             if (s_state.dl_ctx.download_failed) {
                 pthread_join(s_state.dl_thread, NULL);
                 s_state.dl_thread_running = false;
+                PLEX_LOG("[Player] full download FAILED\n");
                 screen_state = PLAYER_SCREEN_ERROR;
                 dirty        = 1;
                 goto render;
@@ -994,6 +1001,7 @@ AppModule module_player_run(SDL_Surface *screen)
                         || strcasecmp(s_state.ext, "opus") == 0)) {
                 struct stat st;
                 if (stat(s_state.temp_path, &st) == 0 && st.st_size >= PREBUFFER_BYTES) {
+                    PLEX_LOG("[Player] progressive start: file_size=%ld\n", (long)st.st_size);
                     Player_stop();
                     if (Player_load(s_state.temp_path) == 0) {
                         const PlexTrack *t = plex_queue_current_track();
@@ -1003,6 +1011,7 @@ AppModule module_player_run(SDL_Surface *screen)
                         }
                         if (dur > 0) Player_setDurationMs(dur);
                         Player_setFileGrowing(true);
+                        s_state.play_start_ticks = SDL_GetTicks();
                         Player_play();
                         s_state.download_pending    = true;
                         s_state.scrobbled           = false;
@@ -1040,14 +1049,15 @@ AppModule module_player_run(SDL_Surface *screen)
                 if (s_state.dl_ctx.download_done) {
                     pthread_join(s_state.dl_thread, NULL);
                     s_state.dl_thread_running = false;
+                    { struct stat _st; PLEX_LOG("[Player] progressive download DONE: pos=%dms file_size=%ld\n", Player_getPosition(), stat(s_state.temp_path, &_st) == 0 ? (long)_st.st_size : -1L); }
                     Player_setFileGrowing(false);
                     s_state.download_pending = false;
                 } else if (s_state.dl_ctx.download_failed) {
                     pthread_join(s_state.dl_thread, NULL);
                     s_state.dl_thread_running = false;
+                    { struct stat _st; PLEX_LOG("[Player] progressive download FAILED: pos=%dms file_size=%ld\n", Player_getPosition(), stat(s_state.temp_path, &_st) == 0 ? (long)_st.st_size : -1L); }
                     Player_setFileGrowing(false);
                     s_state.download_pending = false;
-                    /* Track may stop early if download failed; user can press Next */
                 }
             }
 
@@ -1056,6 +1066,7 @@ AppModule module_player_run(SDL_Surface *screen)
 
             /* Auto-advance on track end */
             if (Player_getState() == PLAYER_STATE_STOPPED) {
+                { struct stat _st; PLEX_LOG("[Player] STOPPED: elapsed=%dms dur=%dms download_pending=%d file_size=%ld\n", (int)(SDL_GetTicks() - s_state.play_start_ticks), Player_getDuration(), s_state.download_pending, stat(s_state.temp_path, &_st) == 0 ? (long)_st.st_size : -1L); }
                 Background_setActive(BG_NONE);
                 /* download_pending should be false here (handled above), but
                  * guard anyway */
@@ -1323,6 +1334,7 @@ AppModule module_player_run(SDL_Surface *screen)
                         s_state.ext[0] = '\0';
                         Player_setFileGrowing(false);
                         if (Player_load(s_state.temp_path) == 0) {
+                            s_state.play_start_ticks = SDL_GetTicks();
                             Player_play();
                             s_state.scrobbled        = false;
                             s_state.last_timeline_ms = SDL_GetTicks();
@@ -1393,6 +1405,7 @@ void PlayerModule_backgroundTick(void)
         if (s_state.dl_ctx.download_done || s_state.dl_ctx.download_failed) {
             pthread_join(s_state.dl_thread, NULL);
             s_state.dl_thread_running = false;
+            { struct stat _st; PLEX_LOG("[Player] BG download %s: pos=%dms file_size=%ld\n", s_state.dl_ctx.download_done ? "DONE" : "FAILED", Player_getPosition(), stat(s_state.temp_path, &_st) == 0 ? (long)_st.st_size : -1L); }
             Player_setFileGrowing(false);
             s_state.download_pending = false;
         }
@@ -1452,8 +1465,10 @@ void PlayerModule_backgroundTick(void)
                 s_state.temp_path[sizeof(s_state.temp_path) - 1] = '\0';
                 s_state.ext[0] = '\0';
                 Player_setFileGrowing(false);
-                if (Player_load(s_state.temp_path) == 0) Player_play();
-                else { Background_setActive(BG_NONE); return; }
+                if (Player_load(s_state.temp_path) == 0) {
+                    s_state.play_start_ticks = SDL_GetTicks();
+                    Player_play();
+                } else { Background_setActive(BG_NONE); return; }
                 s_state.scrobbled = false;
                 s_state.last_timeline_ms = SDL_GetTicks();
             } else {
@@ -1493,6 +1508,7 @@ void PlayerModule_backgroundTick(void)
                     s_state.ext[0] = '\0';
                     Player_setFileGrowing(false);
                     if (Player_load(s_state.temp_path) == 0) {
+                        s_state.play_start_ticks = SDL_GetTicks();
                         Player_play();
                     } else {
                         PLEX_LOG_ERROR("[Player] BG auto-advance: Player_load failed (offline): %s\n",
@@ -1542,6 +1558,7 @@ void PlayerModule_backgroundTick(void)
                     int dur = t ? t->duration_ms : 0;
                     if (dur > 0) Player_setTotalFrames((int64_t)((dur / 1000.0) * 48000.0));
                 }
+                s_state.play_start_ticks = SDL_GetTicks();
                 Player_play();
                 s_state.scrobbled        = false;
                 s_state.last_timeline_ms = SDL_GetTicks();
@@ -1574,6 +1591,7 @@ void PlayerModule_backgroundTick(void)
                     }
                     if (dur > 0) Player_setDurationMs(dur);
                     Player_setFileGrowing(true);
+                    s_state.play_start_ticks = SDL_GetTicks();
                     Player_play();
                     s_state.download_pending = true;
                     s_state.scrobbled        = false;

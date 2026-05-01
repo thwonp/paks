@@ -1272,6 +1272,10 @@ static void* stream_thread_func(void* arg) {
                     clearerr(player.stream_decoder.file_handle);
                     usleep(50000);   /* 50 ms */
                 } else {
+                    PLEX_LOG("[Player] stream_eof: current_frame=%lld total_frames=%lld file_growing=%d\n",
+                             (long long)player.stream_decoder.current_frame,
+                             (long long)player.stream_decoder.total_frames,
+                             (int)player.file_growing);
                     player.stream_eof = true;
                 }
             } else {
