@@ -817,6 +817,12 @@ AppModule module_player_run(SDL_Surface *screen)
             s_state.download_pending = false;
         }
 
+        /* Stop player and clear old temp file; prevents progressive-start from firing on
+         * stale data before the new download has written anything. */
+        Player_stop();
+        if (!s_state.is_local_file && s_state.temp_path[0])
+            remove(s_state.temp_path);
+
         /* Fetch cover art and start download.
          * Clear any stale BG_MUSIC state immediately so that if the user
          * cancels the download (B-press) or hits an error, browse will not
