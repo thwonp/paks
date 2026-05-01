@@ -723,6 +723,7 @@ static int       s_fav_count = 0;
 static bool pending_r2_jump     = false; /* deferred artist letter jump */
 static bool pending_r2_jump_all = false; /* deferred all-albums year jump */
 static bool s_fav_sync_was_active = false;
+static bool s_album_dl_was_active = false;
 
 /* Set by module_browse_request_library_pick(); checked on every entry. */
 static bool s_library_pick_requested = false;
@@ -924,8 +925,12 @@ AppModule module_browse_run(SDL_Surface *screen)
 
         Background_tick();
 
-        /* Redraw every frame while a download is in progress */
-        if (plex_downloads_is_active()) dirty = 1;
+        /* Redraw every frame while a download is in progress;
+         * force one extra frame on active→inactive transition so the
+         * indicator updates from "N/N" to "✓" without requiring user input. */
+        bool album_dl_active = plex_downloads_is_active();
+        if (album_dl_active || s_album_dl_was_active) dirty = 1;
+        s_album_dl_was_active = album_dl_active;
 
         /* Global input (Start long-press → quit dialog, volume, etc.) */
         GlobalInputResult global = ModuleCommon_handleGlobalInput(screen, &show_setting, 0);
