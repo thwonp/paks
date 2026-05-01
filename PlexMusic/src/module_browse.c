@@ -2629,9 +2629,10 @@ AppModule module_browse_run(SDL_Surface *screen)
                 tctx.tracks         = tracks;
                 tctx.count          = track_count;
                 tctx.show_favorites = true;
-                PlexQueue *q = plex_queue_get();
-                tctx.playing_rating_key = q->active
-                    ? q->tracks[q->current_index].rating_key : -1;
+                {
+                    const PlexTrack *pt = plex_queue_current_track();
+                    tctx.playing_rating_key = pt ? pt->rating_key : -1;
+                }
 
                 /* Album title + year as art metadata */
                 char art_line2[PLEX_MAX_STR + 8] = "";
@@ -2731,9 +2732,10 @@ AppModule module_browse_run(SDL_Surface *screen)
                 tctx.tracks         = s_fav_tracks;
                 tctx.count          = s_fav_count;
                 tctx.show_favorites = false;  /* no hearts — every item is a favorite */
-                PlexQueue *q = plex_queue_get();
-                tctx.playing_rating_key = q->active
-                    ? q->tracks[q->current_index].rating_key : -1;
+                {
+                    const PlexTrack *pt = plex_queue_current_track();
+                    tctx.playing_rating_key = pt ? pt->rating_key : -1;
+                }
 
                 render_browse_screen(screen, "Favorite Tracks",
                                      fav_selected, &fav_scroll,
