@@ -50,7 +50,8 @@ static JSON_Value *server_get(const PlexConfig *cfg, const char *path_and_query)
         .method      = PLEX_HTTP_GET,
         .body        = NULL,
         .token       = cfg->token,
-        .timeout_sec = 15
+        .timeout_sec = 15,
+        .no_persist  = true
     };
 
     int n = plex_net_fetch(url, buf, RESP_BUF_SIZE, &opts);
