@@ -742,6 +742,7 @@ static void load_next_track(PlexQueue *queue,
         if (Player_load(s_state.temp_path) == 0) {
             s_state.play_start_ticks = SDL_GetTicks();
             Player_play();
+            if (t->duration_ms > 0) Player_setDurationMs(t->duration_ms);
             if (screen_state) *screen_state = PLAYER_SCREEN_PLAYING;
         } else {
             PLEX_LOG_ERROR("[Player] Player_load failed (offline): %s\n", s_state.temp_path);
@@ -867,6 +868,8 @@ AppModule module_player_run(SDL_Surface *screen)
                 s_state.scrobbled        = false;
                 s_state.last_timeline_ms = SDL_GetTicks();
                 screen_state             = PLAYER_SCREEN_PLAYING;
+                const PlexTrack *cur = plex_queue_current_track();
+                if (cur && cur->duration_ms > 0) Player_setDurationMs(cur->duration_ms);
             } else {
                 PLEX_LOG_ERROR("[Player] Player_load failed (offline): %s\n", s_state.temp_path);
                 screen_state = PLAYER_SCREEN_ERROR;
@@ -1336,6 +1339,7 @@ AppModule module_player_run(SDL_Surface *screen)
                             s_state.scrobbled        = false;
                             s_state.last_timeline_ms = SDL_GetTicks();
                             screen_state             = PLAYER_SCREEN_PLAYING;
+                            if (t->duration_ms > 0) Player_setDurationMs(t->duration_ms);
                         } else {
                             PLEX_LOG_ERROR("[Player] Player_load retry failed (offline): %s\n",
                                            s_state.temp_path);
