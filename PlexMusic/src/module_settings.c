@@ -33,8 +33,7 @@ typedef enum {
 #define SETTINGS_ITEM_STREAM_BITRATE   4
 #define SETTINGS_ITEM_DOWNLOAD_BITRATE 5
 #define SETTINGS_ITEM_POCKET_LOCK      6
-#define SETTINGS_ITEM_SEEK_INTERVAL    7
-#define SETTINGS_ITEM_COUNT            8
+#define SETTINGS_ITEM_COUNT            7
 
 /* Milliseconds to show "Server updated." confirmation */
 #define SERVER_UPDATED_PAUSE_MS 1500
@@ -85,28 +84,6 @@ static int bitrate_index(int kbps)
     for (int i = 0; i < BITRATE_COUNT; i++)
         if (BITRATE_VALUES[i] == kbps) return i;
     return 0;
-}
-
-/* Seek-interval cycle */
-static const int SEEK_INTERVAL_VALUES[] = { 5000, 10000, 30000, 60000 };
-static const int SEEK_INTERVAL_COUNT = 4;
-
-static const char *seek_interval_label(int ms)
-{
-    switch (ms) {
-        case 5000:  return "5 seconds";
-        case 10000: return "10 seconds";
-        case 30000: return "30 seconds";
-        case 60000: return "1 minute";
-        default:    return "10 seconds";
-    }
-}
-
-static int seek_interval_index(int ms)
-{
-    for (int i = 0; i < SEEK_INTERVAL_COUNT; i++)
-        if (SEEK_INTERVAL_VALUES[i] == ms) return i;
-    return 1;  /* default index for 10 s */
 }
 
 /* =========================================================================
@@ -190,10 +167,6 @@ static void render_settings_menu(SDL_Surface *screen, int show_setting,
              "Pocket Button Lock: %s",
              cfg->pocket_lock_enabled ? "MENU+SELECT" : "Off");
 
-    char seek_interval_label_str[48];
-    snprintf(seek_interval_label_str, sizeof(seek_interval_label_str),
-             "Seek Interval: %s", seek_interval_label(cfg->seek_interval_ms));
-
     const char *labels[SETTINGS_ITEM_COUNT] = {
         "Switch Server",
         "Sign Out",
@@ -202,7 +175,6 @@ static void render_settings_menu(SDL_Surface *screen, int show_setting,
         stream_bitrate_label,
         download_bitrate_label,
         pocket_lock_label,
-        seek_interval_label_str,
     };
 
     /* Adjust list_y for menu items so they appear below the header block */
@@ -441,13 +413,6 @@ AppModule module_settings_run(SDL_Surface *screen)
                     cfg->pocket_lock_enabled = !cfg->pocket_lock_enabled;
                     plex_config_save(cfg);
                     dirty = 1;
-                } else if (menu_selected == SETTINGS_ITEM_SEEK_INTERVAL) {
-                    PlexConfig *cfg = plex_config_get_mutable();
-                    int idx = seek_interval_index(cfg->seek_interval_ms);
-                    idx = (idx + 1) % SEEK_INTERVAL_COUNT;
-                    cfg->seek_interval_ms = SEEK_INTERVAL_VALUES[idx];
-                    plex_config_save(cfg);
-                    dirty = 1;
                 }
             } else if (PAD_justPressed(BTN_LEFT)) {
                 if (menu_selected == SETTINGS_ITEM_SCREEN_TIMEOUT) {
@@ -474,13 +439,6 @@ AppModule module_settings_run(SDL_Surface *screen)
                 } else if (menu_selected == SETTINGS_ITEM_POCKET_LOCK) {
                     PlexConfig *cfg = plex_config_get_mutable();
                     cfg->pocket_lock_enabled = !cfg->pocket_lock_enabled;
-                    plex_config_save(cfg);
-                    dirty = 1;
-                } else if (menu_selected == SETTINGS_ITEM_SEEK_INTERVAL) {
-                    PlexConfig *cfg = plex_config_get_mutable();
-                    int idx = seek_interval_index(cfg->seek_interval_ms);
-                    idx = (idx - 1 + SEEK_INTERVAL_COUNT) % SEEK_INTERVAL_COUNT;
-                    cfg->seek_interval_ms = SEEK_INTERVAL_VALUES[idx];
                     plex_config_save(cfg);
                     dirty = 1;
                 }

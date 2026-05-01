@@ -895,130 +895,6 @@ AppModule module_player_run(SDL_Surface *screen)
                 if (t) plex_favorites_toggle(t);
                 dirty = 1;
             }
-            else if (PAD_justPressed(BTN_L1)) {
-                if (plex_queue_has_prev()) {
-                    {
-                        const PlexTrack *t = plex_queue_current_track();
-                        if (t) fire_scrobble(cfg, t->rating_key,
-                                             "stopped", Player_getPosition(),
-                                             Player_getDuration(), false);
-                    }
-                    Background_setActive(BG_NONE);
-
-                    /* Capture old path info before advancing queue. */
-                    bool old_is_local = s_state.is_local_file;
-                    char old_temp_path[768];
-                    strncpy(old_temp_path, s_state.temp_path, sizeof(old_temp_path) - 1);
-                    old_temp_path[sizeof(old_temp_path) - 1] = '\0';
-
-                    /* Advance queue and update s_state paths for render. */
-                    plex_queue_prev(cfg);
-
-                    {
-                        const PlexTrack *t = plex_queue_current_track();
-                        s_state.is_local_file = t ? (t->local_path[0] != '\0') : false;
-                        if (s_state.is_local_file && t) {
-                            strncpy(s_state.temp_path, t->local_path,
-                                    sizeof(s_state.temp_path) - 1);
-                            s_state.temp_path[sizeof(s_state.temp_path) - 1] = '\0';
-                            s_state.ext[0] = '\0';
-                        } else if (t) {
-                            if (cfg->stream_bitrate_kbps > 0)
-                                strncpy(s_state.ext, "opus", sizeof(s_state.ext) - 1);
-                            else
-                                extract_ext(t->media_key, s_state.ext, sizeof(s_state.ext));
-                            s_state.ext[sizeof(s_state.ext) - 1] = '\0';
-                            build_temp_path(s_state.ext, s_state.temp_path, sizeof(s_state.temp_path));
-                        }
-                    }
-
-                    plex_art_clear();
-                    {
-                        const PlexTrack *t = plex_queue_current_track();
-                        if (t) plex_art_fetch(cfg, t->thumb);
-
-                        /* Render the new track's downloading/loading screen immediately. */
-                        if (t) render_downloading(screen, t, 0);
-                    }
-
-                    /* Now do the blocking stop/join behind the visible frame. */
-                    if (s_state.download_pending) {
-                        s_state.dl_ctx.should_cancel = true;
-                        Player_setFileGrowing(false);
-                        pthread_join(s_state.dl_thread, NULL);
-                        s_state.dl_thread_running = false;
-                        s_state.download_pending  = false;
-                    }
-                    Player_stop();
-                    if (!old_is_local) remove(old_temp_path);
-
-                    s_state.transcode = (cfg->stream_bitrate_kbps > 0);
-                    load_next_track(queue, &screen_state);
-                    dirty = 1;
-                }
-            }
-            else if (PAD_justPressed(BTN_R1)) {
-                if (plex_queue_has_next()) {
-                    {
-                        const PlexTrack *t = plex_queue_current_track();
-                        if (t) fire_scrobble(cfg, t->rating_key,
-                                             "stopped", Player_getPosition(),
-                                             Player_getDuration(), false);
-                    }
-                    Background_setActive(BG_NONE);
-
-                    /* Capture old path info before advancing queue. */
-                    bool old_is_local = s_state.is_local_file;
-                    char old_temp_path[768];
-                    strncpy(old_temp_path, s_state.temp_path, sizeof(old_temp_path) - 1);
-                    old_temp_path[sizeof(old_temp_path) - 1] = '\0';
-
-                    /* Advance queue and update s_state paths for render. */
-                    plex_queue_next(cfg);
-
-                    {
-                        const PlexTrack *t = plex_queue_current_track();
-                        s_state.is_local_file = t ? (t->local_path[0] != '\0') : false;
-                        if (s_state.is_local_file && t) {
-                            strncpy(s_state.temp_path, t->local_path,
-                                    sizeof(s_state.temp_path) - 1);
-                            s_state.temp_path[sizeof(s_state.temp_path) - 1] = '\0';
-                            s_state.ext[0] = '\0';
-                        } else if (t) {
-                            if (cfg->stream_bitrate_kbps > 0)
-                                strncpy(s_state.ext, "opus", sizeof(s_state.ext) - 1);
-                            else
-                                extract_ext(t->media_key, s_state.ext, sizeof(s_state.ext));
-                            s_state.ext[sizeof(s_state.ext) - 1] = '\0';
-                            build_temp_path(s_state.ext, s_state.temp_path, sizeof(s_state.temp_path));
-                        }
-                    }
-
-                    plex_art_clear();
-                    {
-                        const PlexTrack *t = plex_queue_current_track();
-                        if (t) plex_art_fetch(cfg, t->thumb);
-
-                        /* Render the new track's downloading/loading screen immediately. */
-                        if (t) render_downloading(screen, t, 0);
-                    }
-
-                    /* Now do the blocking stop/join behind the visible frame. */
-                    if (s_state.download_pending) {
-                        s_state.dl_ctx.should_cancel = true;
-                        Player_setFileGrowing(false);
-                        pthread_join(s_state.dl_thread, NULL);
-                        s_state.dl_thread_running = false;
-                        s_state.download_pending  = false;
-                    }
-                    Player_stop();
-                    if (!old_is_local) remove(old_temp_path);
-
-                    s_state.transcode = (cfg->stream_bitrate_kbps > 0);
-                    load_next_track(queue, &screen_state);
-                    dirty = 1;
-                }
-            }
 
             /* BTN_LEFT: tap = prev track, hold = seek -10 s per repeat tick */
             if (PAD_justPressed(BTN_LEFT)) {
@@ -1026,7 +902,7 @@ AppModule module_player_run(SDL_Surface *screen)
                 left_seeked = false;
             }
             if (PAD_justRepeated(BTN_LEFT) && left_armed && !PAD_justPressed(BTN_LEFT)) {
-                Player_seek(Player_getPosition() - cfg->seek_interval_ms);
+                Player_seek(Player_getPosition() - 5000);
                 left_seeked = true;
                 dirty = 1;
             }
@@ -1097,7 +973,7 @@ AppModule module_player_run(SDL_Surface *screen)
                 right_seeked = false;
             }
             if (PAD_justRepeated(BTN_RIGHT) && right_armed && !PAD_justPressed(BTN_RIGHT)) {
-                Player_seek(Player_getPosition() + cfg->seek_interval_ms);
+                Player_seek(Player_getPosition() + 5000);
                 right_seeked = true;
                 dirty = 1;
             }

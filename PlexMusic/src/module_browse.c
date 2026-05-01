@@ -1194,7 +1194,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 /* Extra hint for offline mode toggle / favorites sync */
                 if (!cfg->offline_mode) {
                     if (fav_idx >= 0 && lib_selected == fav_idx)
-                        GFX_blitButtonGroup((char*[]){"Y", "OFFLINE SYNC", NULL}, 0, screen, 0);
+                        GFX_blitButtonGroup((char*[]){"Y", "Sync", NULL}, 0, screen, 0);
                     else
                         GFX_blitButtonGroup((char*[]){"SELECT", "OFFLINE", NULL}, 0, screen, 0);
                 } else {
@@ -1562,7 +1562,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 int cap = visible_items - 1;
                 artist_selected = (artist_selected + step <= cap) ? artist_selected + step : cap;
                 if (artist_selected != prev) dirty = 1;
-            } else if (PAD_justRepeated(BTN_R2)) {
+            } else if (PAD_justRepeated(BTN_R1)) {
                 int i = artist_selected + 1;
                 while (i < artists_loaded &&
                        toupper((unsigned char)s_artists[i].title_sort[0]) ==
@@ -1586,7 +1586,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                     }
                     dirty = 1;
                 }
-            } else if (PAD_justRepeated(BTN_L2)) {
+            } else if (PAD_justRepeated(BTN_L1)) {
                 char cur = toupper((unsigned char)s_artists[artist_selected].title_sort[0]);
                 int start = artist_selected;
                 while (start > 0 &&
@@ -1819,13 +1819,13 @@ AppModule module_browse_run(SDL_Surface *screen)
                     }
                     dirty = 1;
                 }
-            } else if (PAD_justRepeated(BTN_R2) && album_count > 0) {
+            } else if (PAD_justRepeated(BTN_R1) && album_count > 0) {
                 int i = album_selected + 1;
                 while (i < album_count &&
                        strcmp(albums[i].year, albums[album_selected].year) == 0)
                     i++;
                 if (i < album_count) { album_selected = i; dirty = 1; }
-            } else if (PAD_justRepeated(BTN_L2) && album_count > 0) {
+            } else if (PAD_justRepeated(BTN_L1) && album_count > 0) {
                 const char *cur = albums[album_selected].year;
                 int start = album_selected;
                 while (start > 0 &&
@@ -2152,7 +2152,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                     }
                     dirty = 1;
                 }
-            } else if (PAD_justRepeated(BTN_R2) && all_albums_loaded > 0
+            } else if (PAD_justRepeated(BTN_R1) && all_albums_loaded > 0
                        && all_album_selected < all_albums_loaded) {
                 int i = all_album_selected + 1;
                 while (i < all_albums_loaded &&
@@ -2182,7 +2182,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                     }
                     dirty = 1;
                 }
-            } else if (PAD_justRepeated(BTN_L2) && all_albums_loaded > 0
+            } else if (PAD_justRepeated(BTN_L1) && all_albums_loaded > 0
                        && all_album_selected < all_albums_loaded) {
                 const char *cur = s_all_albums[all_album_selected].year;
                 int start = all_album_selected;
