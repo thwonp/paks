@@ -548,7 +548,24 @@ static void home_get_label(int idx, char *buf, int size, void *ud)
     if (ctx->nowplay_idx >= 0 && idx == ctx->nowplay_idx) { snprintf(buf, size, "%s", ctx->now_playing_label); return; }
     if (idx == ctx->artists_idx) { snprintf(buf, size, "Artists"); return; }
     if (idx == ctx->albums_idx)  { snprintf(buf, size, "Albums");  return; }
-    if (ctx->fav_idx >= 0 && idx == ctx->fav_idx) { snprintf(buf, size, "Favorite Tracks"); return; }
+    if (ctx->fav_idx >= 0 && idx == ctx->fav_idx) {
+        DlStatus st = plex_downloads_album_status(PLEX_FAVORITES_SYNC_ALBUM_ID);
+        if (st == DL_STATUS_DOWNLOADING) {
+            int completed = 0, total = 0;
+            plex_downloads_album_progress(PLEX_FAVORITES_SYNC_ALBUM_ID,
+                                          &completed, &total);
+            if (total > 0)
+                /* ○ U+25CB */
+                snprintf(buf, size, "\xe2\x97\x8b %d/%d  Favorite Tracks",
+                         completed, total);
+            else
+                /* ↓ U+2193 fallback before total is known */
+                snprintf(buf, size, "\xe2\x86\x93  Favorite Tracks");
+        } else {
+            snprintf(buf, size, "Favorite Tracks");
+        }
+        return;
+    }
     if (ctx->recent_idx >= 0 && idx == ctx->recent_idx) { snprintf(buf, size, "Recently Added"); return; }
     snprintf(buf, size, "Settings");
 }
@@ -1065,6 +1082,10 @@ AppModule module_browse_run(SDL_Surface *screen)
                 GFX_sync();
                 continue;
             }
+
+            /* Redraw each frame while fav sync progress is updating */
+            if (plex_downloads_album_status(PLEX_FAVORITES_SYNC_ALBUM_ID) == DL_STATUS_DOWNLOADING)
+                dirty = 1;
 
             /* Render */
             if (dirty) {

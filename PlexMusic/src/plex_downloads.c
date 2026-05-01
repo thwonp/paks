@@ -775,8 +775,11 @@ static void *download_worker(void *arg)
 
         } else {
             /* --- Favorites sync processing (queue is empty) --- */
-            g_fav_sync_pending = false;
-            g_fav_sync_active  = true;
+            g_fav_sync_pending     = false;
+            g_fav_sync_active      = true;
+            g_active_album_id      = PLEX_FAVORITES_SYNC_ALBUM_ID;
+            g_active_completed     = 0;
+            g_active_total         = g_fav_sync_slot.count;
             pthread_mutex_unlock(&g_mutex);
 
             for (int i = 0; i < g_fav_sync_slot.count; i++) {
@@ -868,12 +871,16 @@ static void *download_worker(void *arg)
                     g_tracks[g_track_count++] = mt;
                     g_albums[fav_idx].track_count++;
                 }
+                g_active_completed = i + 1;
                 manifest_save_locked();
                 pthread_mutex_unlock(&g_mutex);
             }
 
             pthread_mutex_lock(&g_mutex);
-            g_fav_sync_active = false;
+            g_active_album_id  = -1;
+            g_active_completed = 0;
+            g_active_total     = 0;
+            g_fav_sync_active  = false;
             pthread_mutex_unlock(&g_mutex);
         }
     }
@@ -1122,18 +1129,18 @@ DlStatus plex_downloads_album_status(int album_rating_key)
 {
     pthread_mutex_lock(&g_mutex);
 
-    /* Check manifest first (DONE) */
+    /* Active download takes priority over manifest presence */
+    if (g_active_album_id == album_rating_key) {
+        pthread_mutex_unlock(&g_mutex);
+        return DL_STATUS_DOWNLOADING;
+    }
+
+    /* Check manifest (DONE) */
     for (int i = 0; i < g_album_count; i++) {
         if (g_albums[i].album_id == album_rating_key) {
             pthread_mutex_unlock(&g_mutex);
             return DL_STATUS_DONE;
         }
-    }
-
-    /* Check currently downloading */
-    if (g_active_album_id == album_rating_key) {
-        pthread_mutex_unlock(&g_mutex);
-        return DL_STATUS_DOWNLOADING;
     }
 
     /* Check queue */
