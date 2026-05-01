@@ -1074,16 +1074,13 @@ void plex_downloads_init(void)
 void plex_downloads_quit(void)
 {
     if (!g_started) return;
-
     pthread_mutex_lock(&g_mutex);
     g_stop = true;
     pthread_cond_signal(&g_cond);
     pthread_mutex_unlock(&g_mutex);
-
     pthread_join(g_worker, NULL);
     g_started = false;
     PLEX_LOG("[Downloads] Shutdown complete\n");
-
     free(g_albums); g_albums = NULL; g_albums_cap = 0; g_album_count = 0;
     free(g_tracks); g_tracks = NULL; g_tracks_cap = 0; g_track_count = 0;
 }

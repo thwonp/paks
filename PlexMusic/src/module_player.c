@@ -459,6 +459,26 @@ static void load_next_track(PlexQueue *queue,
 }
 
 /* ------------------------------------------------------------------
+ * Quit cleanup helper — cancel download, stop player, remove temp file.
+ * ------------------------------------------------------------------ */
+
+static void player_module_quit_cleanup(PlayerScreenState screen_state)
+{
+    if (s_state.dl_thread_running) {
+        s_state.dl_ctx.should_cancel = true;
+        Player_setFileGrowing(false);
+        pthread_join(s_state.dl_thread, NULL);
+        s_state.dl_thread_running = false;
+        s_state.download_pending  = false;
+    }
+    Player_stop();
+    if (!s_state.is_local_file && s_state.temp_path[0])
+        remove(s_state.temp_path);
+    Background_setActive(BG_NONE);
+    (void)screen_state;
+}
+
+/* ------------------------------------------------------------------
  * Public entry point
  * ------------------------------------------------------------------ */
 
@@ -592,6 +612,26 @@ AppModule module_player_run(SDL_Surface *screen)
         /* Power management heartbeat — must run every awake frame */
         ModuleCommon_PWR_update(&dirty, &show_setting);
 
+        /* Global input (MENU+START = quit, START = help/confirm) */
+        {
+            GlobalInputResult global = ModuleCommon_handleGlobalInput(screen, &show_setting, 0);
+            if (global.should_quit) {
+                if (screen_state == PLAYER_SCREEN_PLAYING) {
+                    fire_scrobble(cfg,
+                                  queue->tracks[queue->current_index].rating_key,
+                                  "stopped", Player_getPosition(),
+                                  Player_getDuration(), false);
+                }
+                player_module_quit_cleanup(screen_state);
+                if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
+                return MODULE_QUIT;
+            }
+            if (global.input_consumed) {
+                GFX_sync();
+                continue;
+            }
+        }
+
         /* ---- Art async update ---- */
         if (plex_art_is_fetching()) dirty = 1;
 
@@ -679,18 +719,6 @@ AppModule module_player_run(SDL_Surface *screen)
                 Player_stop();
                 if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
                 return MODULE_BROWSE;
-            }
-            /* Start long-press to quit */
-            if (PAD_justPressed(BTN_START)) {
-                if (!s_state.is_local_file) {
-                    s_state.dl_ctx.should_cancel = true;
-                    pthread_join(s_state.dl_thread, NULL);
-                    s_state.dl_thread_running = false;
-                    remove(s_state.temp_path);
-                }
-                Player_stop();
-                if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
-                return MODULE_QUIT;
             }
         }
 
@@ -785,25 +813,6 @@ AppModule module_player_run(SDL_Surface *screen)
                 Background_setActive(BG_MUSIC);
                 if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
                 return MODULE_BROWSE;
-            }
-            else if (PAD_justPressed(BTN_START)) {
-                /* Full quit — stop playback and clean up */
-                fire_scrobble(cfg,
-                              queue->tracks[queue->current_index].rating_key,
-                              "stopped", Player_getPosition(),
-                              Player_getDuration(), false);
-                Background_setActive(BG_NONE);
-                if (s_state.download_pending) {
-                    s_state.dl_ctx.should_cancel = true;
-                    Player_setFileGrowing(false);
-                    pthread_join(s_state.dl_thread, NULL);
-                    s_state.dl_thread_running = false;
-                    s_state.download_pending  = false;
-                }
-                Player_stop();
-                if (!s_state.is_local_file) remove(s_state.temp_path);
-                if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
-                return MODULE_QUIT;
             }
             else if (PAD_justPressed(BTN_L1)) {
                 if (plex_queue_has_prev()) {

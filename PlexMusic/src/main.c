@@ -196,7 +196,6 @@ int main(int argc, char *argv[]) {
     PWR_quit();
     PAD_quit();
     GFX_quit();
-
     plex_log_flush();
     return EXIT_SUCCESS;
 }
