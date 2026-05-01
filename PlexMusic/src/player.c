@@ -1272,7 +1272,8 @@ static void* stream_thread_func(void* arg) {
                 // Resample chunk to target rate if needed
                 int src_rate = player.stream_decoder.source_sample_rate;
                 int dst_rate = get_target_sample_rate();
-                bool is_last = (player.stream_decoder.current_frame >= player.stream_decoder.total_frames);
+                bool is_last = !player.file_growing &&
+                               (player.stream_decoder.current_frame >= player.stream_decoder.total_frames);
 
                 size_t output_frames;
                 if (src_rate == dst_rate && player.playback_speed == 1.0f) {
@@ -1413,6 +1414,7 @@ static void audio_callback(void* userdata, Uint8* stream, int len) {
 
         // Check if track ended (decoder reached EOF or frame count)
         if ((ctx->stream_decoder.current_frame >= ctx->stream_decoder.total_frames || ctx->stream_eof) &&
+            !ctx->file_growing &&
             circular_buffer_available(&ctx->stream_buffer) == 0) {
             if (ctx->repeat) {
                 // Seek back to beginning
@@ -2361,6 +2363,10 @@ void Player_stop(void) {
 
 void Player_setFileGrowing(bool growing) {
     player.file_growing = growing;
+    if (growing) {
+        player.stream_eof = false;
+        player.stream_decoder.total_frames = INT64_MAX;
+    }
 }
 
 void Player_setTotalFrames(int64_t frames)
@@ -2368,6 +2374,10 @@ void Player_setTotalFrames(int64_t frames)
     pthread_mutex_lock(&player.mutex);
     player.stream_decoder.total_frames = frames;
     pthread_mutex_unlock(&player.mutex);
+}
+
+void Player_setDurationMs(int ms) {
+    player.track_info.duration_ms = ms;
 }
 
 void Player_togglePause(void) {

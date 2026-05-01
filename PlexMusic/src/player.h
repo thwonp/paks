@@ -195,6 +195,10 @@ void Player_setFileGrowing(bool growing);
  * a partial file). Thread-safe. */
 void Player_setTotalFrames(int64_t frames);
 
+/* Override the track's duration_ms (used for progressive playback where the partial-file
+ * scan would yield a wrong duration). Call before Player_play. */
+void Player_setDurationMs(int ms);
+
 // Resume/pause audio device (used by radio module)
 void Player_resumeAudio(void);
 void Player_pauseAudio(void);
