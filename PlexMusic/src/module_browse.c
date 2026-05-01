@@ -526,6 +526,44 @@ static void render_delete_confirm_dialog(SDL_Surface *screen)
     }
 }
 
+/*
+ * Render the "Downloads in progress — go offline anyway?" warning dialog.
+ */
+static void render_offline_warn_confirm_dialog(SDL_Surface *screen)
+{
+    int box_w = SCALE1(320);
+    int box_h = SCALE1(96);
+
+    DialogBox dlg = render_dialog_box(screen, box_w, box_h);
+
+    SDL_Surface *line1 = TTF_RenderUTF8_Blended(
+        Fonts_getMedium(), "Downloads in progress.", COLOR_WHITE);
+    if (line1) {
+        int tx = dlg.box_x + (dlg.box_w - line1->w) / 2;
+        int ty = dlg.box_y + SCALE1(10);
+        SDL_BlitSurface(line1, NULL, screen, &(SDL_Rect){tx, ty});
+        SDL_FreeSurface(line1);
+    }
+
+    SDL_Surface *line2 = TTF_RenderUTF8_Blended(
+        Fonts_getSmall(), "Go offline anyway?", COLOR_LIGHT_TEXT);
+    if (line2) {
+        int tx = dlg.box_x + (dlg.box_w - line2->w) / 2;
+        int ty = dlg.box_y + SCALE1(34);
+        SDL_BlitSurface(line2, NULL, screen, &(SDL_Rect){tx, ty});
+        SDL_FreeSurface(line2);
+    }
+
+    SDL_Surface *hint = TTF_RenderUTF8_Blended(
+        Fonts_getSmall(), "[A] Go Offline  [B] Cancel", COLOR_LIGHT_TEXT);
+    if (hint) {
+        int tx = dlg.box_x + (dlg.box_w - hint->w) / 2;
+        int ty = dlg.box_y + box_h - SCALE1(26);
+        SDL_BlitSurface(hint, NULL, screen, &(SDL_Rect){tx, ty});
+        SDL_FreeSurface(hint);
+    }
+}
+
 /* =========================================================================
  * Label callbacks
  * ========================================================================= */
@@ -792,9 +830,10 @@ AppModule module_browse_run(SDL_Surface *screen)
     /* ------------------------------------------------------------------ */
     int dirty = 1;
     int show_setting = 0;
-    bool quit_confirm_active   = false;
-    bool delete_confirm_active   = false;
-    int  delete_confirm_album_id = -1;
+    bool quit_confirm_active        = false;
+    bool delete_confirm_active      = false;
+    int  delete_confirm_album_id    = -1;
+    bool offline_warn_confirm_active = false;
 
     PlexConfig *mutable_cfg = plex_config_get_mutable();
     const PlexConfig *cfg   = mutable_cfg;
@@ -853,7 +892,8 @@ AppModule module_browse_run(SDL_Surface *screen)
         pending_r2_jump_all = false;
         tracks_back_state  = BROWSE_ALBUMS;
         last_art_thumb[0] = '\0';
-        quit_confirm_active = false;
+        quit_confirm_active          = false;
+        offline_warn_confirm_active  = false;
     }
 
     /* ------------------------------------------------------------------ */
@@ -934,7 +974,41 @@ AppModule module_browse_run(SDL_Surface *screen)
             }
 
             /* Input */
-            if (quit_confirm_active) {
+            if (offline_warn_confirm_active) {
+                if (PAD_justPressed(BTN_A)) {
+                    offline_warn_confirm_active = false;
+                    /* Proceed with the go-offline transition */
+                    if (s_load.thread_started) {
+                        s_load.cancel = true;
+                        pthread_join(s_load.thread, NULL);
+                        s_load.thread_started = false;
+                        pthread_mutex_lock(&s_load.lock);
+                        s_load.status = LOAD_IDLE;
+                        pthread_mutex_unlock(&s_load.lock);
+                    }
+                    mutable_cfg->offline_mode = true;
+                    plex_config_save(mutable_cfg);
+                    artists_ls       = LOAD_IDLE;
+                    all_albums_ls    = LOAD_IDLE;
+                    recent_albums_ls = LOAD_IDLE;
+                    if (s_artists == NULL) {
+                        s_artists     = malloc(PLEX_MAX_OFFLINE_ITEMS * sizeof(PlexArtist));
+                        s_artists_cap = s_artists ? PLEX_MAX_OFFLINE_ITEMS : 0;
+                    }
+                    if (s_all_albums == NULL) {
+                        s_all_albums     = malloc(PLEX_MAX_OFFLINE_ITEMS * sizeof(PlexAlbum));
+                        s_all_albums_cap = s_all_albums ? PLEX_MAX_OFFLINE_ITEMS : 0;
+                    }
+                    dirty = 1;
+                    GFX_sync();
+                    continue;
+                }
+                if (PAD_justPressed(BTN_B)) {
+                    offline_warn_confirm_active = false;
+                    dirty = 1;
+                }
+                dirty = 1;  /* keep re-rendering while dialog is visible */
+            } else if (quit_confirm_active) {
                 if (PAD_justPressed(BTN_A)) return MODULE_QUIT;
                 if (PAD_justPressed(BTN_B)) { quit_confirm_active = false; dirty = 1; }
                 dirty = 1;  /* always re-render when dialog is active */
@@ -1047,28 +1121,37 @@ AppModule module_browse_run(SDL_Surface *screen)
                 dirty = 1;
             } else if (PAD_justPressed(BTN_SELECT)) {
                 if (!cfg->offline_mode) {
-                    /* Cancel any running load */
-                    if (s_load.thread_started) {
-                        s_load.cancel = true;
-                        pthread_join(s_load.thread, NULL);
-                        s_load.thread_started = false;
-                        pthread_mutex_lock(&s_load.lock);
-                        s_load.status = LOAD_IDLE;
-                        pthread_mutex_unlock(&s_load.lock);
-                    }
-                    /* Switch to offline — home menu stays; user picks Artists or Albums */
-                    mutable_cfg->offline_mode = true;
-                    plex_config_save(mutable_cfg);
-                    artists_ls       = LOAD_IDLE;
-                    all_albums_ls    = LOAD_IDLE;
-                    recent_albums_ls = LOAD_IDLE;
-                    if (s_artists == NULL) {
-                        s_artists     = malloc(PLEX_MAX_OFFLINE_ITEMS * sizeof(PlexArtist));
-                        s_artists_cap = s_artists ? PLEX_MAX_OFFLINE_ITEMS : 0;
-                    }
-                    if (s_all_albums == NULL) {
-                        s_all_albums     = malloc(PLEX_MAX_OFFLINE_ITEMS * sizeof(PlexAlbum));
-                        s_all_albums_cap = s_all_albums ? PLEX_MAX_OFFLINE_ITEMS : 0;
+                    if (plex_downloads_is_active()) {
+                        offline_warn_confirm_active = true;
+                        dirty = 1;
+                        /* fall through to render — do NOT switch mode yet */
+                    } else {
+                        /* Cancel any running load */
+                        if (s_load.thread_started) {
+                            s_load.cancel = true;
+                            pthread_join(s_load.thread, NULL);
+                            s_load.thread_started = false;
+                            pthread_mutex_lock(&s_load.lock);
+                            s_load.status = LOAD_IDLE;
+                            pthread_mutex_unlock(&s_load.lock);
+                        }
+                        /* Switch to offline — home menu stays; user picks Artists or Albums */
+                        mutable_cfg->offline_mode = true;
+                        plex_config_save(mutable_cfg);
+                        artists_ls       = LOAD_IDLE;
+                        all_albums_ls    = LOAD_IDLE;
+                        recent_albums_ls = LOAD_IDLE;
+                        if (s_artists == NULL) {
+                            s_artists     = malloc(PLEX_MAX_OFFLINE_ITEMS * sizeof(PlexArtist));
+                            s_artists_cap = s_artists ? PLEX_MAX_OFFLINE_ITEMS : 0;
+                        }
+                        if (s_all_albums == NULL) {
+                            s_all_albums     = malloc(PLEX_MAX_OFFLINE_ITEMS * sizeof(PlexAlbum));
+                            s_all_albums_cap = s_all_albums ? PLEX_MAX_OFFLINE_ITEMS : 0;
+                        }
+                        dirty = 1;
+                        GFX_sync();
+                        continue;
                     }
                 } else {
                     /* Switch back to online */
@@ -1077,10 +1160,10 @@ AppModule module_browse_run(SDL_Surface *screen)
                     artists_ls       = LOAD_IDLE;
                     all_albums_ls    = LOAD_IDLE;
                     recent_albums_ls = LOAD_IDLE;
+                    dirty = 1;
+                    GFX_sync();
+                    continue;
                 }
-                dirty = 1;
-                GFX_sync();
-                continue;
             }
 
             /* Redraw each frame while fav sync progress is updating */
@@ -1118,6 +1201,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                 if (quit_confirm_active) {
                     render_quit_confirm_dialog(screen);
                 }
+                if (offline_warn_confirm_active)
+                    render_offline_warn_confirm_dialog(screen);
                 GFX_flip(screen);
                 dirty = 0;
             } else {

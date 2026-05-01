@@ -1186,7 +1186,7 @@ DlStatus plex_downloads_album_status(int album_rating_key)
 bool plex_downloads_is_active(void)
 {
     pthread_mutex_lock(&g_mutex);
-    bool active = (g_active_album_id != -1);
+    bool active = (g_active_album_id != -1) || g_fav_sync_pending || g_fav_sync_active;
     pthread_mutex_unlock(&g_mutex);
     return active;
 }
