@@ -346,8 +346,10 @@ int plex_api_get_recent_albums(const PlexConfig *cfg, int section_id,
 
 /* ------------------------------------------------------------------
  * plex_api_get_albums
- * GET {server_url}/library/metadata/{artist_rating_key}/children
- * Response: MediaContainer.Metadata[]
+ * GET {server_url}/hubs/metadata/{artist_rating_key}?count=999
+ * Response: MediaContainer.Hub[] — filter hubIdentifier == "artist.albums*"
+ *   then iterate each matching hub's Metadata[].
+ * Returns all release types (albums, singles, EPs, live, etc.).
  * ------------------------------------------------------------------ */
 int plex_api_get_albums(const PlexConfig *cfg, int artist_rating_key,
                         PlexAlbum albums[], int *count)
@@ -357,41 +359,53 @@ int plex_api_get_albums(const PlexConfig *cfg, int artist_rating_key,
 
     char path[256];
     snprintf(path, sizeof(path),
-             "/library/metadata/%d/children", artist_rating_key);
+             "/hubs/metadata/%d?count=999", artist_rating_key);
 
     JSON_Value *root = server_get(cfg, path);
     if (!root) return -1;
 
     JSON_Object *mc = json_object_dotget_object(
                           json_value_get_object(root), "MediaContainer");
-    JSON_Array  *meta = mc ? json_object_get_array(mc, "Metadata") : NULL;
+    JSON_Array  *hubs = mc ? json_object_get_array(mc, "Hub") : NULL;
 
-    if (!meta) { json_value_free(root); return 0; }
+    if (!hubs) { json_value_free(root); return 0; }
 
-    size_t total = json_array_get_count(meta);
-    for (size_t i = 0; i < total && *count < PLEX_MAX_ARTIST_ALBUMS; i++) {
-        JSON_Object *item = json_array_get_object(meta, i);
-        if (!item) continue;
+    size_t hub_count = json_array_get_count(hubs);
+    for (size_t h = 0; h < hub_count && *count < PLEX_MAX_ARTIST_ALBUMS; h++) {
+        JSON_Object *hub = json_array_get_object(hubs, h);
+        if (!hub) continue;
 
-        PlexAlbum *al = &albums[*count];
-        memset(al, 0, sizeof(*al));
+        const char *hub_id = json_object_get_string(hub, "hubIdentifier");
+        if (!hub_id || strncmp(hub_id, "artist.albums", 13) != 0) continue;
 
-        const char *rk         = json_object_get_string(item, "ratingKey");
-        al->rating_key         = rk ? atoi(rk) : 0;
-        const char *prk        = json_object_get_string(item, "parentRatingKey");
-        al->artist_id          = prk ? atoi(prk) : 0;
-        const char *title      = json_object_get_string(item, "title");
-        const char *artist     = json_object_get_string(item, "parentTitle");
-        const char *thumb      = json_object_get_string(item, "thumb");
-        double year_d          = json_object_get_number(item, "year");
+        JSON_Array *meta = json_object_get_array(hub, "Metadata");
+        if (!meta) continue;
 
-        if (title)  strncpy(al->title,  title,  sizeof(al->title) - 1);
-        if (artist) strncpy(al->artist, artist, sizeof(al->artist) - 1);
-        if (thumb)  strncpy(al->thumb,  thumb,  sizeof(al->thumb) - 1);
-        if (year_d > 0)
-            snprintf(al->year, sizeof(al->year), "%d", (int)year_d);
+        size_t total = json_array_get_count(meta);
+        for (size_t i = 0; i < total && *count < PLEX_MAX_ARTIST_ALBUMS; i++) {
+            JSON_Object *item = json_array_get_object(meta, i);
+            if (!item) continue;
 
-        (*count)++;
+            PlexAlbum *al = &albums[*count];
+            memset(al, 0, sizeof(*al));
+
+            const char *rk         = json_object_get_string(item, "ratingKey");
+            al->rating_key         = rk ? atoi(rk) : 0;
+            const char *prk        = json_object_get_string(item, "parentRatingKey");
+            al->artist_id          = prk ? atoi(prk) : 0;
+            const char *title      = json_object_get_string(item, "title");
+            const char *artist     = json_object_get_string(item, "parentTitle");
+            const char *thumb      = json_object_get_string(item, "thumb");
+            double year_d          = json_object_get_number(item, "year");
+
+            if (title)  strncpy(al->title,  title,  sizeof(al->title) - 1);
+            if (artist) strncpy(al->artist, artist, sizeof(al->artist) - 1);
+            if (thumb)  strncpy(al->thumb,  thumb,  sizeof(al->thumb) - 1);
+            if (year_d > 0)
+                snprintf(al->year, sizeof(al->year), "%d", (int)year_d);
+
+            (*count)++;
+        }
     }
 
     json_value_free(root);
