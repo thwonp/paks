@@ -678,6 +678,7 @@ typedef struct {
     PlexTrack *tracks;
     int        count;
     bool       show_favorites;  /* prepend ♥ for favorited tracks */
+    int        playing_rating_key;  /* rating_key of current queue track, or -1 */
 } TrackLabelCtx;
 
 static void track_get_label(int i, char *buf, int size, void *ud)
@@ -686,17 +687,19 @@ static void track_get_label(int i, char *buf, int size, void *ud)
     char dur[16];
     format_duration(ctx->tracks[i].duration_ms, dur, sizeof(dur));
 
+    bool playing = ctx->playing_rating_key != -1 &&
+                   ctx->playing_rating_key == ctx->tracks[i].rating_key;
     bool fav = ctx->show_favorites &&
                plex_favorites_contains(ctx->tracks[i].rating_key);
-    const char *heart = fav ? "\xe2\x99\xa5 " : "";
+    const char *prefix = playing ? "\xe2\x96\xb6 " : (fav ? "\xe2\x99\xa5 " : "");
 
     if (ctx->tracks[i].track_number > 0)
         snprintf(buf, size, "%s%d. %s  %s",
-                 heart, ctx->tracks[i].track_number,
+                 prefix, ctx->tracks[i].track_number,
                  ctx->tracks[i].title, dur);
     else
         snprintf(buf, size, "%s%s  %s",
-                 heart, ctx->tracks[i].title, dur);
+                 prefix, ctx->tracks[i].title, dur);
 }
 
 /* =========================================================================
@@ -2579,8 +2582,13 @@ AppModule module_browse_run(SDL_Surface *screen)
                 track_selected = (track_selected + step <= cap) ? track_selected + step : cap;
                 if (track_selected != prev) dirty = 1;
             } else if (PAD_justPressed(BTN_A) && track_count > 0) {
-                Background_setActive(BG_NONE);
-                plex_queue_set(cfg, tracks, track_count, track_selected);
+                PlexQueue *q = plex_queue_get();
+                bool same_track = q->active &&
+                    q->tracks[q->current_index].rating_key == tracks[track_selected].rating_key;
+                if (!same_track) {
+                    Background_setActive(BG_NONE);
+                    plex_queue_set(cfg, tracks, track_count, track_selected);
+                }
                 return MODULE_PLAYER;
             } else if (PAD_justPressed(BTN_B)) {
                 last_art_thumb[0] = '\0';
@@ -2625,6 +2633,9 @@ AppModule module_browse_run(SDL_Surface *screen)
                 tctx.tracks         = tracks;
                 tctx.count          = track_count;
                 tctx.show_favorites = true;
+                PlexQueue *q = plex_queue_get();
+                tctx.playing_rating_key = q->active
+                    ? q->tracks[q->current_index].rating_key : -1;
 
                 /* Album title + year as art metadata */
                 char art_line2[PLEX_MAX_STR + 8] = "";
@@ -2691,8 +2702,13 @@ AppModule module_browse_run(SDL_Surface *screen)
                 fav_selected = (fav_selected + step <= cap) ? fav_selected + step : (cap >= 0 ? cap : 0);
                 if (fav_selected != prev) dirty = 1;
             } else if (PAD_justPressed(BTN_A) && s_fav_count > 0) {
-                Background_setActive(BG_NONE);
-                plex_queue_set(cfg, s_fav_tracks, s_fav_count, fav_selected);
+                PlexQueue *q = plex_queue_get();
+                bool same_track = q->active &&
+                    q->tracks[q->current_index].rating_key == s_fav_tracks[fav_selected].rating_key;
+                if (!same_track) {
+                    Background_setActive(BG_NONE);
+                    plex_queue_set(cfg, s_fav_tracks, s_fav_count, fav_selected);
+                }
                 return MODULE_PLAYER;
             } else if (PAD_justPressed(BTN_B)) {
                 state = BROWSE_LIBRARIES;
@@ -2725,6 +2741,9 @@ AppModule module_browse_run(SDL_Surface *screen)
                 tctx.tracks         = s_fav_tracks;
                 tctx.count          = s_fav_count;
                 tctx.show_favorites = false;  /* no hearts — every item is a favorite */
+                PlexQueue *q = plex_queue_get();
+                tctx.playing_rating_key = q->active
+                    ? q->tracks[q->current_index].rating_key : -1;
 
                 render_browse_screen(screen, "Favorite Tracks",
                                      fav_selected, &fav_scroll,
