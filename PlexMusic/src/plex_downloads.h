@@ -79,6 +79,13 @@ int plex_downloads_get_all_albums(PlexAlbum *out, int out_max);
  */
 void plex_downloads_delete_album(int album_id);
 
+/*
+ * All downloaded tracks whose rating_key appears in the favorites list,
+ * drawn from every album in the manifest (not just the favorites-sync album).
+ * Safe to call from the main thread. Returns count written, capped at out_max.
+ */
+int plex_downloads_get_favorite_tracks(PlexTrack *out, int out_max);
+
 /* Reserved album_id for the favorites sync manifest entry */
 #define PLEX_FAVORITES_SYNC_ALBUM_ID 0
 

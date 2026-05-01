@@ -1419,3 +1419,54 @@ int plex_downloads_get_tracks_for_album(int album_id,
     pthread_mutex_unlock(&g_mutex);
     return 0;
 }
+
+static void manifest_track_to_plex(int track_idx, PlexTrack *out)
+{
+    const ManifestTrack *mt = &g_tracks[track_idx];
+    memset(out, 0, sizeof(*out));
+    out->rating_key   = mt->track_id;
+    out->track_number = mt->track_number;
+    out->duration_ms  = mt->duration_ms;
+    strncpy(out->title,      mt->title,      sizeof(out->title) - 1);
+    strncpy(out->artist,     mt->artist,     sizeof(out->artist) - 1);
+    strncpy(out->album,      mt->album,      sizeof(out->album) - 1);
+    strncpy(out->thumb,      mt->thumb,      sizeof(out->thumb) - 1);
+    strncpy(out->local_path, mt->local_path, sizeof(out->local_path) - 1);
+}
+
+int plex_downloads_get_favorite_tracks(PlexTrack *out, int out_max)
+{
+    if (!out || out_max <= 0) return 0;
+
+    pthread_mutex_lock(&g_mutex);
+    int n = 0;
+
+    /* Pass 1: favorites-sync album entries take priority */
+    for (int a = 0; a < g_album_count && n < out_max; a++) {
+        if (g_albums[a].album_id != PLEX_FAVORITES_SYNC_ALBUM_ID) continue;
+        const ManifestAlbum *ma = &g_albums[a];
+        for (int j = 0; j < ma->track_count && n < out_max; j++) {
+            int ti = ma->track_start + j;
+            if (!plex_favorites_contains(g_tracks[ti].track_id)) continue;
+            manifest_track_to_plex(ti, &out[n++]);
+        }
+    }
+
+    /* Pass 2: regular album entries — only if not already added from pass 1 */
+    for (int a = 0; a < g_album_count && n < out_max; a++) {
+        if (g_albums[a].album_id == PLEX_FAVORITES_SYNC_ALBUM_ID) continue;
+        const ManifestAlbum *ma = &g_albums[a];
+        for (int j = 0; j < ma->track_count && n < out_max; j++) {
+            int ti = ma->track_start + j;
+            if (!plex_favorites_contains(g_tracks[ti].track_id)) continue;
+            bool already = false;
+            for (int k = 0; k < n; k++) {
+                if (out[k].rating_key == g_tracks[ti].track_id) { already = true; break; }
+            }
+            if (!already) manifest_track_to_plex(ti, &out[n++]);
+        }
+    }
+
+    pthread_mutex_unlock(&g_mutex);
+    return n;
+}

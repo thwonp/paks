@@ -1096,15 +1096,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                     if (!cfg->offline_mode) {
                         s_fav_count = plex_favorites_get(s_fav_tracks, PLEX_MAX_TRACKS);
                     } else {
-                        /* Offline: downloaded favorites ∩ favorites.json, in-place filter */
-                        int all = plex_downloads_get_tracks_for_album(
-                                      PLEX_FAVORITES_SYNC_ALBUM_ID, s_fav_tracks, PLEX_MAX_TRACKS);
-                        int n = 0;
-                        for (int i = 0; i < all; i++) {
-                            if (plex_favorites_contains(s_fav_tracks[i].rating_key))
-                                s_fav_tracks[n++] = s_fav_tracks[i];
-                        }
-                        s_fav_count = n;
+                        s_fav_count = plex_downloads_get_favorite_tracks(
+                                          s_fav_tracks, PLEX_MAX_TRACKS);
                     }
                     fav_selected  = 0;
                     fav_scroll    = 0;
@@ -2720,14 +2713,8 @@ AppModule module_browse_run(SDL_Surface *screen)
                 if (!cfg->offline_mode) {
                     s_fav_count = plex_favorites_get(s_fav_tracks, PLEX_MAX_TRACKS);
                 } else {
-                    int all = plex_downloads_get_tracks_for_album(
-                                  PLEX_FAVORITES_SYNC_ALBUM_ID, s_fav_tracks, PLEX_MAX_TRACKS);
-                    int n = 0;
-                    for (int i = 0; i < all; i++) {
-                        if (plex_favorites_contains(s_fav_tracks[i].rating_key))
-                            s_fav_tracks[n++] = s_fav_tracks[i];
-                    }
-                    s_fav_count = n;
+                    s_fav_count = plex_downloads_get_favorite_tracks(
+                                      s_fav_tracks, PLEX_MAX_TRACKS);
                 }
                 if (fav_selected >= s_fav_count)
                     fav_selected = s_fav_count > 0 ? s_fav_count - 1 : 0;
