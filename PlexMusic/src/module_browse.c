@@ -920,6 +920,9 @@ AppModule module_browse_run(SDL_Surface *screen)
         GFX_startFrame();
         PAD_poll();
 
+        /* Power management heartbeat — must run every frame before any early-return */
+        ModuleCommon_PWR_update(&dirty, &show_setting);
+
         Background_tick();
 
         /* Redraw every frame while a download is in progress */

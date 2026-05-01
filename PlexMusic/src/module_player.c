@@ -589,6 +589,9 @@ AppModule module_player_run(SDL_Surface *screen)
         /* Reset idle timer on any input while awake */
         if (PAD_anyPressed()) s_last_activity_ms = SDL_GetTicks();
 
+        /* Power management heartbeat — must run every awake frame */
+        ModuleCommon_PWR_update(&dirty, &show_setting);
+
         /* ---- Art async update ---- */
         if (plex_art_is_fetching()) dirty = 1;
 

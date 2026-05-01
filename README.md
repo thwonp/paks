@@ -28,6 +28,7 @@ A native Plex music client for NextUI. Browse your Plex music library, stream tr
 - Set download quality targets (original or Opus transcode)
 - Full offline mode: browse and play downloaded albums without a network connection
 - Offline Artists and Albums views mirror the online experience
+- Warning prompt if you try to switch to offline while a download is in progress
 
 **Favorites**
 - Press Y on any track (online or offline) to toggle it as a favorite — a ♥ appears in the track listing

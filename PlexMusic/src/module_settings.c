@@ -366,6 +366,9 @@ AppModule module_settings_run(SDL_Surface *screen)
         GFX_startFrame();
         PAD_poll();
 
+        /* Power management heartbeat — must run every frame before any early-return */
+        ModuleCommon_PWR_update(&dirty, &show_setting);
+
         /* Global input (Start long-press → quit dialog, volume, etc.) */
         GlobalInputResult global = ModuleCommon_handleGlobalInput(screen, &show_setting, 0);
         if (global.should_quit) {
