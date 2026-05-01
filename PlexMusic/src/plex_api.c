@@ -503,7 +503,6 @@ void plex_api_get_transcode_url(const PlexConfig *cfg, const PlexTrack *track,
              "&musicBitrate=%d"
              "&path=%%2Flibrary%%2Fmetadata%%2F%d"
              "&session=%s"
-             "&X-Plex-Chunked=1"
              "&X-Plex-Client-Identifier=plexmusic-nextui"
              "&X-Plex-Client-Profile-Extra=%s"
              "&X-Plex-Session-Identifier=%s"

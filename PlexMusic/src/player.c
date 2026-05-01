@@ -332,7 +332,13 @@ static int opus_read_cb(void *stream, unsigned char *ptr, int nbytes) {
     while (1) {
         int n = (int)fread(ptr, 1, nbytes, f);
         if (n > 0) return n;
-        if (!player.file_growing) return 0;
+        if (!player.file_growing) {
+            /* Download just finished — try once more before signalling EOF.
+             * Avoids stopping at the prebuffer boundary when the download
+             * completed while we were mid-retry loop. */
+            clearerr(f);
+            return (int)fread(ptr, 1, nbytes, f);
+        }
         clearerr(f);
         usleep(50000);
     }

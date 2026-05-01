@@ -699,6 +699,7 @@ static void start_download(DownloadCtx *ctx, pthread_t *thread,
     ctx->opts.method      = PLEX_HTTP_GET;
     ctx->opts.token       = NULL;  /* token is already in the URL */
     ctx->opts.timeout_sec = 60;    /* audio files can be large */
+    ctx->opts.no_persist  = true;  /* download runs on a separate thread; must not share s_persist_ctx */
 
     pthread_create(thread, NULL, download_worker, ctx);
 }
