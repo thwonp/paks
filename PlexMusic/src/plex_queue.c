@@ -110,6 +110,14 @@ const PlexTrack *plex_queue_current_track(void)
     return &g_queue.tracks[g_queue.shuffle_order[g_queue.current_index]];
 }
 
+const PlexTrack *plex_queue_peek(int offset)
+{
+    if (!g_queue.active || offset <= 0) return NULL;
+    int idx = g_queue.current_index + offset;
+    if (idx >= g_queue.count) return NULL;
+    return &g_queue.tracks[g_queue.shuffle_order[idx]];
+}
+
 void plex_queue_toggle_shuffle(void)
 {
     static bool seeded = false;

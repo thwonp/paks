@@ -33,7 +33,8 @@ typedef enum {
 #define SETTINGS_ITEM_STREAM_BITRATE   4
 #define SETTINGS_ITEM_DOWNLOAD_BITRATE 5
 #define SETTINGS_ITEM_POCKET_LOCK      6
-#define SETTINGS_ITEM_COUNT            7
+#define SETTINGS_ITEM_PRELOAD_COUNT    7
+#define SETTINGS_ITEM_COUNT            8
 
 /* Milliseconds to show "Server updated." confirmation */
 #define SERVER_UPDATED_PAUSE_MS 1500
@@ -84,6 +85,16 @@ static int bitrate_index(int kbps)
     for (int i = 0; i < BITRATE_COUNT; i++)
         if (BITRATE_VALUES[i] == kbps) return i;
     return 0;
+}
+
+/* Human-readable label for a preload_count value */
+static const char *preload_count_label(int count)
+{
+    if (count == 0) return "Off";
+    if (count == 1) return "1 track";
+    static char buf[16];
+    snprintf(buf, sizeof(buf), "%d tracks", count);
+    return buf;
 }
 
 /* =========================================================================
@@ -167,6 +178,10 @@ static void render_settings_menu(SDL_Surface *screen, int show_setting,
              "Pocket Button Lock: %s",
              cfg->pocket_lock_enabled ? "MENU+SELECT" : "Off");
 
+    char preload_count_lbl[32];
+    snprintf(preload_count_lbl, sizeof(preload_count_lbl),
+             "Track Preload: %s", preload_count_label(cfg->preload_count));
+
     const char *labels[SETTINGS_ITEM_COUNT] = {
         "Switch Server",
         "Sign Out",
@@ -175,6 +190,7 @@ static void render_settings_menu(SDL_Surface *screen, int show_setting,
         stream_bitrate_label,
         download_bitrate_label,
         pocket_lock_label,
+        preload_count_lbl,
     };
 
     /* Adjust list_y for menu items so they appear below the header block */
@@ -413,6 +429,11 @@ AppModule module_settings_run(SDL_Surface *screen)
                     cfg->pocket_lock_enabled = !cfg->pocket_lock_enabled;
                     plex_config_save(cfg);
                     dirty = 1;
+                } else if (menu_selected == SETTINGS_ITEM_PRELOAD_COUNT) {
+                    PlexConfig *cfg = plex_config_get_mutable();
+                    cfg->preload_count = (cfg->preload_count + 1) % 11;
+                    plex_config_save(cfg);
+                    dirty = 1;
                 }
             } else if (PAD_justPressed(BTN_LEFT)) {
                 if (menu_selected == SETTINGS_ITEM_SCREEN_TIMEOUT) {
@@ -439,6 +460,11 @@ AppModule module_settings_run(SDL_Surface *screen)
                 } else if (menu_selected == SETTINGS_ITEM_POCKET_LOCK) {
                     PlexConfig *cfg = plex_config_get_mutable();
                     cfg->pocket_lock_enabled = !cfg->pocket_lock_enabled;
+                    plex_config_save(cfg);
+                    dirty = 1;
+                } else if (menu_selected == SETTINGS_ITEM_PRELOAD_COUNT) {
+                    PlexConfig *cfg = plex_config_get_mutable();
+                    cfg->preload_count = (cfg->preload_count + 10) % 11;
                     plex_config_save(cfg);
                     dirty = 1;
                 }

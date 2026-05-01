@@ -46,6 +46,11 @@ void plex_queue_clear(void);
 /* Returns pointer to the currently active track (respects shuffle order) */
 const PlexTrack *plex_queue_current_track(void);
 
+/* Returns pointer to the track at current_index + offset (1 = next track).
+ * Respects shuffle order. Returns NULL if out of range or offset <= 0.
+ * Does not modify queue state. */
+const PlexTrack *plex_queue_peek(int offset);
+
 /* Toggle shuffle on/off. When enabling, Fisher-Yates shuffles shuffle_order[]
  * while keeping current track at current_index. When disabling, restores
  * identity order and updates current_index to point to the same track. */

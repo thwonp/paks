@@ -24,6 +24,7 @@ typedef struct {
     int  stream_bitrate_kbps;        /* 0 = Original; 96/128/192/256/320 = transcode to Opus */
     int  download_bitrate_kbps;      /* same, for offline downloads */
     bool pocket_lock_enabled;        /* true = MENU+SELECT required to wake; false = any button */
+    int  preload_count;              /* 0 = disabled; 1–10 = tracks to preload ahead */
 } PlexConfig;
 
 typedef struct {

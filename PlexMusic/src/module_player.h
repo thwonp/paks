@@ -23,4 +23,10 @@ AppModule module_player_run(SDL_Surface *screen);
  */
 void PlayerModule_backgroundTick(void);
 
+/*
+ * Cancel all in-flight preload downloads and discard cached preload files.
+ * Call when the queue order changes (new album selected, etc.).
+ */
+void PlayerModule_cancelPreload(void);
+
 #endif /* MODULE_PLAYER_H */

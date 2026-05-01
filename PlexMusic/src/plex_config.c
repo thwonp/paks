@@ -114,6 +114,14 @@ int plex_config_load(PlexConfig *cfg)
     else
         cfg->pocket_lock_enabled = true;
 
+    if (json_object_has_value(obj, "preload_count")) {
+        cfg->preload_count = (int)json_object_get_number(obj, "preload_count");
+        if (cfg->preload_count < 0)  cfg->preload_count = 0;
+        if (cfg->preload_count > 10) cfg->preload_count = 10;
+    } else {
+        cfg->preload_count = 1;
+    }
+
     json_value_free(root);
     return 0;
 }
@@ -141,6 +149,7 @@ int plex_config_save(const PlexConfig *cfg)
     json_object_set_number(obj, "stream_bitrate_kbps",   cfg->stream_bitrate_kbps);
     json_object_set_number(obj, "download_bitrate_kbps", cfg->download_bitrate_kbps);
     json_object_set_boolean(obj, "pocket_lock_enabled",  cfg->pocket_lock_enabled ? 1 : 0);
+    json_object_set_number(obj, "preload_count",         cfg->preload_count);
 
     char *json_str = json_serialize_to_string_pretty(root);
     json_value_free(root);

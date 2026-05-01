@@ -11,6 +11,7 @@
 #include "background.h"
 #include "defines.h"
 #include "module_browse.h"
+#include "module_player.h"
 #include "module_settings.h"
 #include "module_common.h"
 #include "plex_api.h"
@@ -2584,6 +2585,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 if (!same_track) {
                     Background_setActive(BG_NONE);
                     plex_queue_set(cfg, tracks, track_count, track_selected);
+                    PlayerModule_cancelPreload();
                 }
                 return MODULE_PLAYER;
             } else if (PAD_justPressed(BTN_B)) {
@@ -2705,6 +2707,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 if (!same_track) {
                     Background_setActive(BG_NONE);
                     plex_queue_set(cfg, s_fav_tracks, s_fav_count, fav_selected);
+                    PlayerModule_cancelPreload();
                 }
                 return MODULE_PLAYER;
             } else if (PAD_justPressed(BTN_B)) {

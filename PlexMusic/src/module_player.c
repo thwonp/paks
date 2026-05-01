@@ -128,6 +128,21 @@ typedef struct {
 } DownloadCtx;
 
 /* ------------------------------------------------------------------
+ * Preload slots
+ * ------------------------------------------------------------------ */
+
+#define MAX_PRELOAD_SLOTS 10
+
+typedef struct {
+    char        rating_key[32];   /* "" = slot is free */
+    char        path[768];
+    char        ext[16];
+    DownloadCtx dl_ctx;
+    pthread_t   dl_thread;
+    bool        dl_running;
+} PreloadSlot;
+
+/* ------------------------------------------------------------------
  * Module-level playback state — survives module_player_run() returning
  * so that background playback and auto-advance work correctly.
  * ------------------------------------------------------------------ */
@@ -143,6 +158,7 @@ typedef struct {
     bool         scrobbled;
     uint32_t     last_timeline_ms;
     int          transcode;          /* cfg->stream_bitrate_kbps > 0 at track-start time */
+    PreloadSlot  preload[MAX_PRELOAD_SLOTS];
 } PlayerModuleState;
 
 static PlayerModuleState s_state;
@@ -211,6 +227,201 @@ static void build_temp_path(const char *ext, char *out_buf, int out_size)
 
     snprintf(out_buf, out_size, "%s/current_track.%s", tmpdir, ext);
 }
+
+static void build_preload_path(int slot_idx, const char *ext,
+                                char *out_buf, int out_size)
+{
+    const char *base = getenv("USERDATA_PATH");
+    if (!base || base[0] == '\0') base = "/mnt/SDCARD/.userdata/tg5040";
+    char tmpdir[512];
+    snprintf(tmpdir, sizeof(tmpdir), "%s/plexmusic/tmp", base);
+    /* mkdir already done by build_temp_path before this is ever called */
+    snprintf(out_buf, out_size, "%s/preload_%d.%s", tmpdir, slot_idx, ext);
+}
+
+/* ------------------------------------------------------------------
+ * Preload helpers
+ * ------------------------------------------------------------------ */
+
+static void preload_cancel_all(void)
+{
+    for (int i = 0; i < MAX_PRELOAD_SLOTS; i++) {
+        PreloadSlot *ps = &s_state.preload[i];
+        if (ps->rating_key[0] == '\0') continue;
+        if (ps->dl_running) {
+            ps->dl_ctx.should_cancel = true;
+            pthread_join(ps->dl_thread, NULL);
+            ps->dl_running = false;
+        }
+        remove(ps->path);
+        ps->rating_key[0] = '\0';
+    }
+}
+
+static void preload_tick(const PlexConfig *cfg)
+{
+    if (cfg->preload_count <= 0 || cfg->offline_mode) return;
+    /* Don't preload while the primary download is still running */
+    static bool s_tick_blocked_logged = false;
+    if (s_state.download_pending || s_state.dl_thread_running) {
+        if (!s_tick_blocked_logged) {
+            PLEX_LOG("[Preload] tick blocked: pending=%d thread=%d\n",
+                     s_state.download_pending, s_state.dl_thread_running);
+            s_tick_blocked_logged = true;
+        }
+        return;
+    }
+    s_tick_blocked_logged = false;
+
+    /* Join any preload download that has finished (success or failure) */
+    for (int i = 0; i < MAX_PRELOAD_SLOTS; i++) {
+        PreloadSlot *ps = &s_state.preload[i];
+        if (!ps->dl_running) continue;
+        if (ps->dl_ctx.download_done || ps->dl_ctx.download_failed) {
+            pthread_join(ps->dl_thread, NULL);
+            ps->dl_running = false;
+            if (ps->dl_ctx.download_failed) {
+                PLEX_LOG("[Preload] slot %d download FAILED rk=%s\n", i, ps->rating_key);
+                remove(ps->path);
+                ps->rating_key[0] = '\0';
+            } else {
+                PLEX_LOG("[Preload] slot %d download DONE rk=%s path=%s\n",
+                         i, ps->rating_key, ps->path);
+            }
+        }
+    }
+
+    /* Check whether any preload download is still in progress */
+    for (int i = 0; i < MAX_PRELOAD_SLOTS; i++) {
+        if (s_state.preload[i].dl_running) return; /* one at a time */
+    }
+
+    /* Find the lowest offset (1..preload_count) not yet preloaded */
+    for (int offset = 1; offset <= cfg->preload_count; offset++) {
+        const PlexTrack *t = plex_queue_peek(offset);
+        if (!t) break;
+        if (t->local_path[0] != '\0') continue; /* local file — no download needed */
+
+        /* Already preloaded? */
+        char rk[32];
+        snprintf(rk, sizeof(rk), "%d", t->rating_key);
+        bool already = false;
+        for (int i = 0; i < MAX_PRELOAD_SLOTS; i++) {
+            if (strcmp(s_state.preload[i].rating_key, rk) == 0) {
+                already = true; break;
+            }
+        }
+        if (already) continue;
+
+        /* Find a free slot */
+        int slot = -1;
+        for (int i = 0; i < MAX_PRELOAD_SLOTS; i++) {
+            if (s_state.preload[i].rating_key[0] == '\0') { slot = i; break; }
+        }
+        if (slot < 0) { PLEX_LOG("[Preload] no free slots\n"); return; }
+
+        /* Determine format */
+        char ext[16];
+        if (cfg->stream_bitrate_kbps > 0)
+            snprintf(ext, sizeof(ext), "opus");
+        else
+            extract_ext(t->media_key, ext, sizeof(ext));
+
+        /* Build URL */
+        char url[2048];
+        if (cfg->stream_bitrate_kbps > 0)
+            plex_api_get_transcode_url(cfg, t, cfg->stream_bitrate_kbps,
+                                       url, sizeof(url));
+        else
+            plex_api_get_stream_url(cfg, t, url, sizeof(url));
+
+        /* Build path */
+        PreloadSlot *ps = &s_state.preload[slot];
+        build_preload_path(slot, ext, ps->path, sizeof(ps->path));
+
+        PLEX_LOG("[Preload] starting offset=%d rk=%s slot=%d ext=%s\n",
+                 offset, rk, slot, ext);
+
+        /* Populate and launch */
+        snprintf(ps->rating_key, sizeof(ps->rating_key), "%s", rk);
+        snprintf(ps->ext, sizeof(ps->ext), "%s", ext);
+        memset(&ps->dl_ctx, 0, sizeof(ps->dl_ctx));
+        snprintf(ps->dl_ctx.url,      sizeof(ps->dl_ctx.url),      "%s", url);
+        snprintf(ps->dl_ctx.filepath, sizeof(ps->dl_ctx.filepath),  "%s", ps->path);
+        ps->dl_ctx.opts.method       = PLEX_HTTP_GET;
+        ps->dl_ctx.opts.timeout_sec  = 60;
+        ps->dl_ctx.opts.no_persist   = true; /* must not share s_persist_ctx */
+        ps->dl_running = true;
+        pthread_create(&ps->dl_thread, NULL, download_worker, &ps->dl_ctx);
+        return; /* start one at a time */
+    }
+}
+
+static bool preload_consume(const PlexConfig *cfg)
+{
+    (void)cfg;
+    const PlexTrack *t = plex_queue_current_track();
+    if (!t || t->local_path[0] != '\0') return false;
+
+    char rk[32];
+    snprintf(rk, sizeof(rk), "%d", t->rating_key);
+    PLEX_LOG("[Preload] consume: checking for rk=%s\n", rk);
+
+    for (int i = 0; i < MAX_PRELOAD_SLOTS; i++) {
+        PreloadSlot *ps = &s_state.preload[i];
+        if (strcmp(ps->rating_key, rk) != 0) continue;
+
+        /* Only use if the download completed successfully */
+        if (!ps->dl_ctx.download_done) {
+            PLEX_LOG("[Preload] consume: found rk=%s but not done (running=%d), discarding\n", rk, ps->dl_running);
+            if (ps->dl_running) {
+                ps->dl_ctx.should_cancel = true;
+                pthread_join(ps->dl_thread, NULL);
+                ps->dl_running = false;
+            }
+            remove(ps->path);
+            ps->rating_key[0] = '\0';
+            return false;
+        }
+
+        /* Join thread if not yet joined */
+        if (ps->dl_running) {
+            pthread_join(ps->dl_thread, NULL);
+            ps->dl_running = false;
+        }
+
+        PLEX_LOG("[Preload] consume: using preloaded file for rk=%s path=%s\n", rk, ps->path);
+
+        /* Set up s_state to play from the preloaded file */
+        strncpy(s_state.temp_path, ps->path,  sizeof(s_state.temp_path) - 1);
+        strncpy(s_state.ext,       ps->ext,   sizeof(s_state.ext) - 1);
+        s_state.temp_path[sizeof(s_state.temp_path) - 1] = '\0';
+        s_state.ext[sizeof(s_state.ext) - 1]             = '\0';
+        s_state.dl_thread_running = false;
+        s_state.download_pending  = false;
+
+        Player_setFileGrowing(false);
+        if (Player_load(s_state.temp_path) == 0) {
+            Player_setDurationMs(t->duration_ms);
+            Player_play();
+            s_state.scrobbled        = false;
+            s_state.last_timeline_ms = SDL_GetTicks();
+            /* Clear the slot AFTER successful load */
+            ps->rating_key[0] = '\0';
+            return true;
+        }
+
+        PLEX_LOG("[Preload] consume: Player_load failed for rk=%s path=%s\n", rk, ps->path);
+        remove(ps->path);
+        ps->rating_key[0] = '\0';
+        return false;
+    }
+
+    PLEX_LOG("[Preload] consume: no match found for rk=%s, falling back to download\n", rk);
+    return false; /* not found in preload cache */
+}
+
+void PlayerModule_cancelPreload(void) { preload_cancel_all(); }
 
 /* ------------------------------------------------------------------
  * Rendering helpers
@@ -556,6 +767,7 @@ static void player_module_quit_cleanup(PlayerScreenState screen_state)
         s_state.dl_thread_running = false;
         s_state.download_pending  = false;
     }
+    preload_cancel_all();
     Player_stop();
     if (!s_state.is_local_file && s_state.temp_path[0])
         remove(s_state.temp_path);
@@ -839,6 +1051,7 @@ AppModule module_player_run(SDL_Surface *screen)
             }
 
             Player_update();
+            preload_tick(cfg);
 
             /* Auto-advance on track end */
             if (Player_getState() == PLAYER_STATE_STOPPED) {
@@ -876,7 +1089,12 @@ AppModule module_player_run(SDL_Surface *screen)
                     }
 
                     s_state.transcode = (cfg->stream_bitrate_kbps > 0);
-                    load_next_track(queue, &screen_state);
+                    if (preload_consume(cfg)) {
+                        s_state.is_local_file = false;
+                        screen_state = PLAYER_SCREEN_PLAYING;
+                    } else {
+                        load_next_track(queue, &screen_state);
+                    }
                     dirty = 1;
                     goto render;
                 } else {
@@ -927,6 +1145,7 @@ AppModule module_player_run(SDL_Surface *screen)
             }
             else if (PAD_justPressed(BTN_L2)) {
                 plex_queue_toggle_shuffle();
+                preload_cancel_all();
                 dirty = 1;
             }
             else if (PAD_justPressed(BTN_R2)) {
@@ -965,6 +1184,7 @@ AppModule module_player_run(SDL_Surface *screen)
                         strncpy(old_temp_path, s_state.temp_path, sizeof(old_temp_path) - 1);
                         old_temp_path[sizeof(old_temp_path) - 1] = '\0';
 
+                        preload_cancel_all();
                         plex_queue_prev(cfg);
 
                         {
@@ -1036,33 +1256,10 @@ AppModule module_player_run(SDL_Surface *screen)
                         strncpy(old_temp_path, s_state.temp_path, sizeof(old_temp_path) - 1);
                         old_temp_path[sizeof(old_temp_path) - 1] = '\0';
 
+                        /* Advance queue FIRST so preload_consume can match the new current track */
                         plex_queue_next(cfg);
 
-                        {
-                            const PlexTrack *t = plex_queue_current_track();
-                            s_state.is_local_file = t ? (t->local_path[0] != '\0') : false;
-                            if (s_state.is_local_file && t) {
-                                strncpy(s_state.temp_path, t->local_path,
-                                        sizeof(s_state.temp_path) - 1);
-                                s_state.temp_path[sizeof(s_state.temp_path) - 1] = '\0';
-                                s_state.ext[0] = '\0';
-                            } else if (t) {
-                                if (cfg->stream_bitrate_kbps > 0)
-                                    strncpy(s_state.ext, "opus", sizeof(s_state.ext) - 1);
-                                else
-                                    extract_ext(t->media_key, s_state.ext, sizeof(s_state.ext));
-                                s_state.ext[sizeof(s_state.ext) - 1] = '\0';
-                                build_temp_path(s_state.ext, s_state.temp_path, sizeof(s_state.temp_path));
-                            }
-                        }
-
-                        plex_art_clear();
-                        {
-                            const PlexTrack *t = plex_queue_current_track();
-                            if (t) plex_art_fetch(cfg, t->thumb);
-                            if (t) render_downloading(screen, t, 0);
-                        }
-
+                        /* Cancel old primary download and stop playback */
                         if (s_state.download_pending) {
                             s_state.dl_ctx.should_cancel = true;
                             Player_setFileGrowing(false);
@@ -1074,7 +1271,23 @@ AppModule module_player_run(SDL_Surface *screen)
                         if (!old_is_local) remove(old_temp_path);
 
                         s_state.transcode = (cfg->stream_bitrate_kbps > 0);
-                        load_next_track(queue, &screen_state);
+
+                        if (!preload_consume(cfg)) {
+                            preload_cancel_all();
+                            load_next_track(queue, &screen_state);
+                        } else {
+                            s_state.is_local_file = false;
+                            screen_state = PLAYER_SCREEN_PLAYING;
+                        }
+
+                        plex_art_clear();
+                        {
+                            const PlexTrack *t = plex_queue_current_track();
+                            if (t) plex_art_fetch(cfg, t->thumb);
+                            if (screen_state == PLAYER_SCREEN_DOWNLOADING && t)
+                                render_downloading(screen, t, 0);
+                        }
+
                         dirty = 1;
                     }
                 }
@@ -1296,11 +1509,13 @@ void PlayerModule_backgroundTick(void)
                     s_state.ext[sizeof(s_state.ext) - 1] = '\0';
                     build_temp_path(s_state.ext, s_state.temp_path, sizeof(s_state.temp_path));
 
-                    memset(&s_state.dl_ctx, 0, sizeof(s_state.dl_ctx));
-                    start_download(&s_state.dl_ctx, &s_state.dl_thread, queue, s_state.temp_path);
-                    s_state.dl_thread_running = true;
-                    s_state.scrobbled         = false;
-                    s_state.last_timeline_ms  = SDL_GetTicks();
+                    if (!preload_consume(cfg)) {
+                        memset(&s_state.dl_ctx, 0, sizeof(s_state.dl_ctx));
+                        start_download(&s_state.dl_ctx, &s_state.dl_thread, queue, s_state.temp_path);
+                        s_state.dl_thread_running = true;
+                        s_state.scrobbled         = false;
+                        s_state.last_timeline_ms  = SDL_GetTicks();
+                    }
                 }
             }
         } else {
@@ -1366,5 +1581,10 @@ void PlayerModule_backgroundTick(void)
                 /* If Player_load failed, wait for full download to complete */
             }
         }
+    }
+
+    {
+        const PlexConfig *cfg = plex_config_get_mutable();
+        if (cfg) preload_tick(cfg);
     }
 }
