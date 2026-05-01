@@ -961,7 +961,6 @@ AppModule module_player_run(SDL_Surface *screen)
                 pthread_join(s_state.dl_thread, NULL);
                 s_state.dl_thread_running = false;
                 s_state.download_pending  = false;
-                { struct stat _st; PLEX_LOG("[Player] full download DONE: file_size=%ld\n", stat(s_state.temp_path, &_st) == 0 ? (long)_st.st_size : -1L); }
 
                 /* Load and play */
                 Player_stop();
@@ -989,7 +988,6 @@ AppModule module_player_run(SDL_Surface *screen)
             if (s_state.dl_ctx.download_failed) {
                 pthread_join(s_state.dl_thread, NULL);
                 s_state.dl_thread_running = false;
-                PLEX_LOG("[Player] full download FAILED\n");
                 screen_state = PLAYER_SCREEN_ERROR;
                 dirty        = 1;
                 goto render;
@@ -1005,7 +1003,6 @@ AppModule module_player_run(SDL_Surface *screen)
                         || strcasecmp(s_state.ext, "opus") == 0)) {
                 struct stat st;
                 if (stat(s_state.temp_path, &st) == 0 && st.st_size >= PREBUFFER_BYTES) {
-                    PLEX_LOG("[Player] progressive start: file_size=%ld\n", (long)st.st_size);
                     Player_stop();
                     if (Player_load(s_state.temp_path) == 0) {
                         const PlexTrack *t = plex_queue_current_track();
@@ -1052,13 +1049,11 @@ AppModule module_player_run(SDL_Surface *screen)
                 if (s_state.dl_ctx.download_done) {
                     pthread_join(s_state.dl_thread, NULL);
                     s_state.dl_thread_running = false;
-                    { struct stat _st; PLEX_LOG("[Player] progressive download DONE: pos=%dms file_size=%ld\n", Player_getPosition(), stat(s_state.temp_path, &_st) == 0 ? (long)_st.st_size : -1L); }
                     Player_setFileGrowing(false);
                     s_state.download_pending = false;
                 } else if (s_state.dl_ctx.download_failed) {
                     pthread_join(s_state.dl_thread, NULL);
                     s_state.dl_thread_running = false;
-                    { struct stat _st; PLEX_LOG("[Player] progressive download FAILED: pos=%dms file_size=%ld\n", Player_getPosition(), stat(s_state.temp_path, &_st) == 0 ? (long)_st.st_size : -1L); }
                     Player_setFileGrowing(false);
                     s_state.download_pending = false;
                 }
@@ -1069,7 +1064,6 @@ AppModule module_player_run(SDL_Surface *screen)
 
             /* Auto-advance on track end */
             if (Player_getState() == PLAYER_STATE_STOPPED) {
-                { struct stat _st; PLEX_LOG("[Player] STOPPED: elapsed=%dms dur=%dms download_pending=%d file_size=%ld\n", (int)(SDL_GetTicks() - s_state.play_start_ticks), Player_getDuration(), s_state.download_pending, stat(s_state.temp_path, &_st) == 0 ? (long)_st.st_size : -1L); }
                 Background_setActive(BG_NONE);
                 /* download_pending should be false here (handled above), but
                  * guard anyway */
@@ -1408,7 +1402,6 @@ void PlayerModule_backgroundTick(void)
         if (s_state.dl_ctx.download_done || s_state.dl_ctx.download_failed) {
             pthread_join(s_state.dl_thread, NULL);
             s_state.dl_thread_running = false;
-            { struct stat _st; PLEX_LOG("[Player] BG download %s: pos=%dms file_size=%ld\n", s_state.dl_ctx.download_done ? "DONE" : "FAILED", Player_getPosition(), stat(s_state.temp_path, &_st) == 0 ? (long)_st.st_size : -1L); }
             Player_setFileGrowing(false);
             s_state.download_pending = false;
         }

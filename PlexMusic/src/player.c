@@ -1310,8 +1310,6 @@ static void* stream_thread_func(void* arg) {
                             op_pcm_seek(of, save_frame);
                             player.stream_decoder.current_frame = save_frame;
                             player.opus_reopened = true;
-                            PLEX_LOG("[Player] Opus reopen seekable: save_frame=%lld real_total=%lld\n",
-                                     (long long)save_frame, (long long)real_total);
                             /* continue — don't set stream_eof */
                         } else {
                             fclose(f);
@@ -1323,10 +1321,6 @@ static void* stream_thread_func(void* arg) {
                         player.stream_eof = true;
                     }
                 } else {
-                    PLEX_LOG("[Player] stream_eof: current_frame=%lld total_frames=%lld file_growing=%d\n",
-                             (long long)player.stream_decoder.current_frame,
-                             (long long)player.stream_decoder.total_frames,
-                             (int)player.file_growing);
                     player.stream_eof = true;
                 }
             } else {

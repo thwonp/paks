@@ -85,39 +85,27 @@ int main(int argc, char *argv[]) {
     (void)argv;
 
     plex_log_init();
-    PLEX_LOG("[DIAG] main() entered\n");
 
     /* --- Platform / SDL init (mirror musicplayer.c sequence) --- */
     SDL_Surface *screen = GFX_init(MODE_MAIN);
-    PLEX_LOG("[DIAG] GFX_init done\n");
     PWR_pinToCores(CPU_CORE_PERFORMANCE);
-    PLEX_LOG("[DIAG] PWR_pinToCores done\n");
 
     InitSettings();
-    PLEX_LOG("[DIAG] InitSettings done\n");
     PAD_init();
-    PLEX_LOG("[DIAG] PAD_init done\n");
     PWR_init();
-    PLEX_LOG("[DIAG] PWR_init done\n");
     PWR_disableAutosleep();
     WIFI_init();
-    PLEX_LOG("[DIAG] WIFI_init done\n");
     Fonts_load();
-    PLEX_LOG("[DIAG] Fonts_load done\n");
     plex_art_init();
-    PLEX_LOG("[DIAG] plex_art_init done\n");
     if (Player_init() != 0) {
         PLEX_LOG_ERROR("[Main] Player_init failed\n");
         plex_log_flush();
         return EXIT_FAILURE;
     }
-    PLEX_LOG("[DIAG] Player_init done\n");
 
     plex_downloads_init();
-    PLEX_LOG("[DIAG] plex_downloads_init done\n");
 
     plex_favorites_init();
-    PLEX_LOG("[DIAG] plex_favorites_init done\n");
 
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
@@ -128,19 +116,13 @@ int main(int argc, char *argv[]) {
      * Fallback path is /mnt/SDCARD/.userdata/shared/plexmusic/config.json.
      */
     memset(&g_config, 0, sizeof(g_config));
-    if (plex_config_load(&g_config) == 0) {
-        PLEX_LOG("Config loaded: server=%s\n", g_config.server_url);
-    } else {
-        PLEX_LOG("No config found — starting at auth screen\n");
-    }
-    PLEX_LOG("[DIAG] plex_config_load done\n");
+    plex_config_load(&g_config);
 
     if (!g_config.offline_mode) {
         SDL_FillRect(screen, NULL, SDL_MapRGB(screen->format, 0x12, 0x12, 0x12));
         GFX_flip(screen);
         apply_relay_fallback(&g_config);
     }
-    PLEX_LOG("[DIAG] startup URL probe done\n");
 
     /*
      * Determine starting module.
@@ -149,7 +131,6 @@ int main(int argc, char *argv[]) {
      */
     bool has_token = plex_config_is_valid(&g_config);
     AppModule current = has_token ? MODULE_BROWSE : MODULE_AUTH;
-    PLEX_LOG("[DIAG] plex_config_is_valid done, module=%d\n", current);
 
     /* --- Main module loop --- */
     while (!g_quit) {

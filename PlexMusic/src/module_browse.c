@@ -752,7 +752,6 @@ void module_browse_reset(void)
 
 AppModule module_browse_run(SDL_Surface *screen)
 {
-    PLEX_LOG("[DIAG] module_browse_run entered\n");
     /* ------------------------------------------------------------------ */
     /* Static state — persists between re-entries from the player module  */
     /* ------------------------------------------------------------------ */
@@ -842,7 +841,6 @@ AppModule module_browse_run(SDL_Surface *screen)
 
     PlexConfig *mutable_cfg = plex_config_get_mutable();
     const PlexConfig *cfg   = mutable_cfg;
-    PLEX_LOG("[DIAG] cfg obtained: server=%s\n", cfg ? cfg->server_url : "(null)");
 
     /* ------------------------------------------------------------------ */
     /* First-time initialisation                                           */
