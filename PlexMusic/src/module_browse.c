@@ -718,6 +718,7 @@ static int       s_fav_count = 0;
 
 static bool pending_r2_jump     = false; /* deferred artist letter jump */
 static bool pending_r2_jump_all = false; /* deferred all-albums year jump */
+static bool s_fav_sync_was_active = false;
 
 /* Set by module_browse_request_library_pick(); checked on every entry. */
 static bool s_library_pick_requested = false;
@@ -1166,9 +1167,11 @@ AppModule module_browse_run(SDL_Surface *screen)
                 }
             }
 
-            /* Redraw each frame while fav sync progress is updating */
-            if (plex_downloads_album_status(PLEX_FAVORITES_SYNC_ALBUM_ID) == DL_STATUS_DOWNLOADING)
-                dirty = 1;
+            /* Redraw while syncing, plus one extra frame on completion to clear the label */
+            bool fav_sync_active = (plex_downloads_album_status(PLEX_FAVORITES_SYNC_ALBUM_ID)
+                                    == DL_STATUS_DOWNLOADING);
+            if (fav_sync_active || s_fav_sync_was_active) dirty = 1;
+            s_fav_sync_was_active = fav_sync_active;
 
             /* Render */
             if (dirty) {
