@@ -29,16 +29,25 @@ A native Plex music client for NextUI. Browse your Plex music library, stream tr
 - Full offline mode: browse and play downloaded albums without a network connection
 - Offline Artists and Albums views mirror the online experience
 
+**Favorites**
+- Press Y on any track (online or offline) to toggle it as a favorite — a ♥ appears in the track listing
+- "Favorite Tracks" on the home menu shows all favorites; A queues the whole list, Y removes a track
+- Press Y on "Favorite Tracks" in online mode to sync: missing tracks are downloaded, removed favorites are deleted from local storage
+- Offline edits (add/remove favorites) are automatically picked up by the next online sync — no extra step needed
+
 **Auth & setup**
 - Sign in once via the standard Plex PIN flow (plex.tv/link)
 - Supports multiple Plex servers — pick one on first launch
 - Auth and settings saved to SD card; no re-login needed after reboot
 
 **Quality of life**
+- Background playback: press B from Now Playing to return to browse while audio keeps playing
+- Dpad left/right: tap = skip track, hold = seek (interval configurable: 5/10/30/60 s)
+- Queue auto-advances through an album during background playback
 - Configurable screen sleep timeout
 - MENU+SELECT wakes the screen from sleep
 - MENU+START quits from anywhere instantly
-- Settings: switch server, sign out, change library, adjust screen timeout, transcode options
+- Settings: switch server, sign out, change library, seek interval, transcode options
 
 **Planned Features**
 - Bug hunting + more testing
