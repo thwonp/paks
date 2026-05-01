@@ -326,42 +326,51 @@ static void render_icon_row(SDL_Surface *screen, const PlexQueue *queue,
     SDL_Color white = COLOR_WHITE;
     SDL_Color gray  = { 0xAA, 0xAA, 0xAA, 0xFF };
 
-    int col_w = (screen->w - 2 * PADDING) / 3;
-    int x0 = PADDING;
-    int x1 = PADDING + col_w;
-    int x2 = PADDING + col_w * 2;
+    /* Shuffle label/color */
+    const char *shuffle_label = queue->shuffle ? "[L2] Shuffle: On" : "[L2] Shuffle: Off";
+    SDL_Color   shuffle_col   = queue->shuffle ? white : gray;
 
-    /* Shuffle */
-    {
-        const char *label = queue->shuffle ? "[L2] Shuffle: On" : "[L2] Shuffle: Off";
-        SDL_Color   col   = queue->shuffle ? white : gray;
-        render_text_left(screen, Fonts_getSmall(), col, label, x0, icons_y);
+    /* Repeat label/color */
+    const char *repeat_label;
+    SDL_Color   repeat_col;
+    if (queue->repeat_mode == REPEAT_ALL) {
+        repeat_label = "[R2] Repeat: All";
+        repeat_col   = white;
+    } else if (queue->repeat_mode == REPEAT_ONE) {
+        repeat_label = "[R2] Repeat: One";
+        repeat_col   = white;
+    } else {
+        repeat_label = "[R2] Repeat: Off";
+        repeat_col   = gray;
     }
 
-    /* Repeat */
-    {
-        const char *label;
-        SDL_Color   col;
-        if (queue->repeat_mode == REPEAT_ALL) {
-            label = "[R2] Repeat: All";
-            col   = white;
-        } else if (queue->repeat_mode == REPEAT_ONE) {
-            label = "[R2] Repeat: One";
-            col   = white;
-        } else {
-            label = "[R2] Repeat: Off";
-            col   = gray;
-        }
-        render_text_left(screen, Fonts_getSmall(), col, label, x1, icons_y);
+    /* Favorite label/color */
+    bool fav = track ? plex_favorites_contains(track->rating_key) : false;
+    const char *fav_label = fav ? "[Y] \xe2\x99\xa5" : "[Y] \xe2\x99\xa1";
+    SDL_Color   fav_col   = fav ? white : gray;
+
+    /* Render all three surfaces to measure widths */
+    SDL_Surface *s0 = TTF_RenderUTF8_Blended(Fonts_getSmall(), shuffle_label, shuffle_col);
+    SDL_Surface *s1 = TTF_RenderUTF8_Blended(Fonts_getSmall(), repeat_label,  repeat_col);
+    SDL_Surface *s2 = TTF_RenderUTF8_Blended(Fonts_getSmall(), fav_label,     fav_col);
+
+    if (s0 && s1 && s2) {
+        int gap     = SCALE1(16);
+        int total_w = s0->w + gap + s1->w + gap + s2->w;
+        int x0      = (screen->w - total_w) / 2;
+
+        SDL_Rect d0 = { x0,                            icons_y, s0->w, s0->h };
+        SDL_Rect d1 = { x0 + s0->w + gap,              icons_y, s1->w, s1->h };
+        SDL_Rect d2 = { x0 + s0->w + gap + s1->w + gap, icons_y, s2->w, s2->h };
+
+        SDL_BlitSurface(s0, NULL, screen, &d0);
+        SDL_BlitSurface(s1, NULL, screen, &d1);
+        SDL_BlitSurface(s2, NULL, screen, &d2);
     }
 
-    /* Favorite */
-    {
-        bool fav = track ? plex_favorites_contains(track->rating_key) : false;
-        const char *label = fav ? "[Y] \xe2\x99\xa5" : "[Y] \xe2\x99\xa1";
-        SDL_Color   col   = fav ? white : gray;
-        render_text_left(screen, Fonts_getSmall(), col, label, x2, icons_y);
-    }
+    if (s0) SDL_FreeSurface(s0);
+    if (s1) SDL_FreeSurface(s1);
+    if (s2) SDL_FreeSurface(s2);
 }
 
 static void render_playing_screen(SDL_Surface *screen,
@@ -369,42 +378,75 @@ static void render_playing_screen(SDL_Surface *screen,
 {
     SDL_FillRect(screen, NULL, SDL_MapRGB(screen->format, 0x12, 0x12, 0x12));
 
-    SDL_Surface *art = plex_art_get();
-    int art_x = (screen->w - COVER_SIZE) / 2;
-    render_cover_art(screen, art, art_x, PADDING);
-
-    int text_y = COVER_SIZE + PADDING * 2;
-
     SDL_Color white = COLOR_WHITE;
     SDL_Color gray  = { 0xAA, 0xAA, 0xAA, 0xFF };
 
     TTF_Font *title_font = is_brick ? Fonts_getLarge() : Fonts_getTitle();
-    render_text_centered(screen, title_font,        white, track->title,  text_y);
-    text_y += TTF_FontHeight(title_font) + SCALE1(4);
-    render_text_centered(screen, Fonts_getArtist(), gray,  track->artist, text_y);
-    text_y += TTF_FontHeight(Fonts_getArtist()) + SCALE1(4);
-    render_text_centered(screen, Fonts_getAlbum(),  gray,  track->album,  text_y);
 
-    /* Playback progress bar — anchored from bottom */
+    /* Measure all element heights */
+    int title_h  = TTF_FontHeight(title_font);
+    int artist_h = TTF_FontHeight(Fonts_getArtist());
+    int album_h  = TTF_FontHeight(Fonts_getAlbum());
+    int small_h  = TTF_FontHeight(Fonts_getSmall());
+
+    /* Fixed-height elements (no gaps) */
+    int fixed_h = COVER_SIZE
+                + title_h + artist_h + album_h
+                + small_h            /* icons row */
+                + PROGRESS_H
+                + small_h;           /* timestamp */
+
+    /* Space left over for all gaps, with PADDING margin top and bottom */
+    int gap_pool = screen->h - 2 * PADDING - fixed_h;
+    if (gap_pool < 0) gap_pool = 0;
+
+    /* Distribute across 7 equal-weight slots:
+     *   art->title (1), title->artist (1), artist->album (1),
+     *   album->icons (1), icons->bar (1), bar->time (1),
+     *   content centering top margin (1)
+     * Use integer division; any remainder goes to the centering margin. */
+    int gap_unit  = gap_pool / 7;
+    int art_gap   = gap_unit;   /* art bottom -> title */
+    int text_gap  = gap_unit;   /* between title/artist/album lines */
+    int block_gap = gap_unit;   /* album->icons and icons->bar */
+    int time_gap  = gap_unit;   /* bar->timestamp */
+    int top_margin = gap_pool - gap_unit * 6;  /* remainder to centering */
+
+    int y = PADDING + top_margin;
+
+    /* Art */
+    SDL_Surface *art = plex_art_get();
+    int art_x = (screen->w - COVER_SIZE) / 2;
+    render_cover_art(screen, art, art_x, y);
+    y += COVER_SIZE + art_gap;
+
+    /* Metadata */
+    render_text_centered(screen, title_font,        white, track->title,  y);
+    y += title_h + text_gap;
+    render_text_centered(screen, Fonts_getArtist(), gray,  track->artist, y);
+    y += artist_h + text_gap;
+    render_text_centered(screen, Fonts_getAlbum(),  gray,  track->album,  y);
+    y += album_h + block_gap;
+
+    /* Icons */
+    render_icon_row(screen, plex_queue_get(), track, y);
+    y += small_h + block_gap;
+
+    /* Progress bar and timestamp — anchored from the bottom so they are
+     * never clipped regardless of font metric variance. */
+    int time_y = screen->h - PADDING - small_h;
+    int bar_y  = time_y - time_gap - PROGRESS_H;
+
     int pos_ms = Player_getPosition();
     int dur_ms = Player_getDuration();
     float frac = (dur_ms > 0) ? ((float)pos_ms / (float)dur_ms) : 0.0f;
     if (frac < 0.0f) frac = 0.0f;
     if (frac > 1.0f) frac = 1.0f;
-
     uint32_t bg_col = SDL_MapRGB(screen->format, 0x40, 0x40, 0x40);
     uint32_t fg_col = SDL_MapRGB(screen->format, 0x22, 0x88, 0xFF);
-
-    int bar_y    = screen->h - SCALE1(60);
-    int time_y   = bar_y + PROGRESS_H + SCALE1(6);
-    int icons_y  = bar_y - TTF_FontHeight(Fonts_getSmall()) - SCALE1(10);
-
-    /* Horizontal icon row just above progress bar */
-    render_icon_row(screen, plex_queue_get(), track, icons_y);
-
     render_progress_bar(screen, bar_y, frac, bg_col, fg_col);
 
-    /* M:SS / M:SS */
+    /* Timestamp */
     char pos_str[16], dur_str[16], time_label[40];
     format_time(pos_str, pos_ms);
     format_time(dur_str, dur_ms);
