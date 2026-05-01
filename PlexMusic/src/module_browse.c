@@ -2621,7 +2621,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                 TrackLabelCtx tctx;
                 tctx.tracks         = tracks;
                 tctx.count          = track_count;
-                tctx.show_favorites = !cfg->offline_mode;
+                tctx.show_favorites = true;
 
                 /* Album title + year as art metadata */
                 char art_line2[PLEX_MAX_STR + 8] = "";
@@ -2657,8 +2657,7 @@ AppModule module_browse_run(SDL_Surface *screen)
                                      plex_art_get(),
                                      track_get_label, &tctx,
                                      "PLAY", "BACK", 0);
-                if (!cfg->offline_mode)
-                    GFX_blitButtonGroup((char*[]){"Y", "FAVORITE", NULL}, 0, screen, 0);
+                GFX_blitButtonGroup((char*[]){"Y", "FAVORITE", NULL}, 0, screen, 0);
                 GFX_flip(screen);
                 dirty = 0;
             } else {
