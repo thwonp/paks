@@ -542,6 +542,7 @@ static int plex_net_fetch_internal(const char *url,
         if (used_persist) {
             /* Stale connection — tear it down and reconnect once */
             PLEX_LOG("[PlexNet] Stale connection detected, reconnecting: %s:%d\n", host, port);
+            ssl_ctx->initialized = false;   /* dead socket — skip close_notify */
             ssl_ctx_free(ssl_ctx);
             s_persist_ctx = NULL;
             s_persist_host[0] = '\0';
@@ -589,6 +590,7 @@ static int plex_net_fetch_internal(const char *url,
             /* Server closed the keep-alive connection. Tear down and retry once. */
             PLEX_LOG("[PlexNet] Stale connection on recv, reconnecting: %s:%d\n", host, port);
             free(hdr); hdr = NULL;
+            ssl_ctx->initialized = false;   /* dead socket — skip close_notify */
             ssl_ctx_free(ssl_ctx);
             s_persist_ctx     = NULL;
             s_persist_host[0] = '\0';

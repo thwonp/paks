@@ -121,6 +121,7 @@ int main(int argc, char *argv[]) {
 
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
+    signal(SIGPIPE, SIG_IGN);      /* prevent crash when writing to dead sockets */
 
     /*
      * Load config from $SHARED_USERDATA_PATH/plexmusic/config.json.
