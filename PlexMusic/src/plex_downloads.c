@@ -282,12 +282,21 @@ static int opus_download_track(const char *server_url,
     opts.timeout_sec = 300;
     opts.no_persist  = true;
 
-    int start_ret = plex_net_download_file(url, local_path, NULL, should_cancel, &opts);
-    if (start_ret >= 0)
-        PLEX_LOG("[Downloads] /start downloaded %d bytes -> %s\n", start_ret, local_path);
-    else
+    char tmp_path[768 + 4];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", local_path);
+
+    int start_ret = plex_net_download_file(url, tmp_path, NULL, should_cancel, &opts);
+    if (start_ret < 0) {
         PLEX_LOG_ERROR("[Downloads] /start failed for track %d (%s)\n",
                        track_rating_key, local_path);
+        remove(tmp_path);
+    } else if (rename(tmp_path, local_path) != 0) {
+        PLEX_LOG_ERROR("[Downloads] rename failed: %s\n", local_path);
+        remove(tmp_path);
+        start_ret = -1;
+    } else {
+        PLEX_LOG("[Downloads] /start downloaded %d bytes -> %s\n", start_ret, local_path);
+    }
 
     /* --- Step 3: /stop (always, for cleanup) --- */
     snprintf(url, sizeof(url),
@@ -672,7 +681,6 @@ static void *download_worker(void *arg)
                         continue;
                     }
                 } else {
-                    /* existing direct-stream path — unchanged */
                     char stream_url[PLEX_MAX_URL];
                     plex_api_get_stream_url(&cfg, t, stream_url, sizeof(stream_url));
                     ensure_parent_dirs(local_path);
@@ -682,10 +690,19 @@ static void *download_worker(void *arg)
                     opts.token       = NULL;
                     opts.timeout_sec = 120;
                     opts.no_persist  = true;
-                    int ret = plex_net_download_file(stream_url, local_path, NULL, &g_stop, &opts);
+                    char tmp_path[768 + 4];
+                    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", local_path);
+                    int ret = plex_net_download_file(stream_url, tmp_path, NULL, &g_stop, &opts);
                     if (ret < 0) {
+                        remove(tmp_path);
                         PLEX_LOG_ERROR("[Downloads] Failed to download track %d (%s), skipping\n",
                                        t->rating_key, t->title);
+                        continue;
+                    }
+                    if (rename(tmp_path, local_path) != 0) {
+                        PLEX_LOG_ERROR("[Downloads] rename failed for track %d (%s), skipping\n",
+                                       t->rating_key, t->title);
+                        remove(tmp_path);
                         continue;
                     }
                 }
@@ -824,8 +841,18 @@ static void *download_worker(void *arg)
                     opts.method      = PLEX_HTTP_GET;
                     opts.timeout_sec = 120;
                     opts.no_persist  = true;
-                    ret = plex_net_download_file(stream_url, local_path, NULL,
+                    char tmp_path[768 + 4];
+                    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", local_path);
+                    ret = plex_net_download_file(stream_url, tmp_path, NULL,
                                                  &g_stop, &opts);
+                    if (ret < 0) {
+                        remove(tmp_path);
+                    } else if (rename(tmp_path, local_path) != 0) {
+                        PLEX_LOG_ERROR("[Downloads] Fav sync: rename failed for track %d (%s)\n",
+                                       t->rating_key, t->title);
+                        remove(tmp_path);
+                        ret = -1;
+                    }
                 }
 
                 if (ret < 0) {
