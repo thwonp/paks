@@ -55,6 +55,7 @@ typedef struct {
     int64_t total_frames;
     int64_t current_frame;
     FILE* file_handle;          // underlying FILE* for clearerr on partial-file retry (NULL if unavailable)
+    char filepath[512];         // path to source file (used for Opus reopen after download completes)
 } StreamDecoder;
 
 // Circular buffer for streaming playback
@@ -107,6 +108,7 @@ typedef struct {
     bool use_streaming;         // True if using streaming mode
     bool stream_eof;            // True when decoder has reached end of file
     volatile bool file_growing; // true = file is still being downloaded; don't treat EOF as real EOF
+    bool opus_reopened;         // true after non-seekable Opus stream has been reopened seekably
 
     // Resampler leftover buffer (for unconsumed input frames)
     int16_t* resample_leftover;

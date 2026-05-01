@@ -990,9 +990,7 @@ AppModule module_player_run(SDL_Surface *screen)
             }
 
             /* Try to start playback early once enough bytes are on disk.
-             * MP3/FLAC/WAV/M4A: total_frames is header-derived, safe on partial files.
-             * Opus (transcoded): total_frames is overridden via Player_setTotalFrames using
-             * Plex-provided duration, so it is also safe for early-start. */
+             * Opus: non-seekable open handles growing file; stream thread reopens seekably after download. */
             if (!s_state.download_pending
                     && (strcasecmp(s_state.ext, "mp3") == 0
                         || strcasecmp(s_state.ext, "flac") == 0
@@ -1006,11 +1004,10 @@ AppModule module_player_run(SDL_Surface *screen)
                     if (Player_load(s_state.temp_path) == 0) {
                         const PlexTrack *t = plex_queue_current_track();
                         int dur = t ? t->duration_ms : 0;
-                        if (s_state.transcode) {
-                            if (dur > 0) Player_setTotalFrames((int64_t)((dur / 1000.0) * 48000.0));
-                        }
-                        if (dur > 0) Player_setDurationMs(dur);
                         Player_setFileGrowing(true);
+                        if (s_state.transcode && dur > 0)
+                            Player_setTotalFrames((int64_t)((dur / 1000.0) * 48000.0));
+                        if (dur > 0) Player_setDurationMs(dur);
                         s_state.play_start_ticks = SDL_GetTicks();
                         Player_play();
                         s_state.download_pending    = true;
@@ -1579,18 +1576,18 @@ void PlayerModule_backgroundTick(void)
                    || strcasecmp(s_state.ext, "wav") == 0
                    || strcasecmp(s_state.ext, "m4a") == 0
                    || strcasecmp(s_state.ext, "opus") == 0) {
-            /* Try progressive start once prebuffer threshold is reached */
+            /* Try progressive start once prebuffer threshold is reached.
+             * Opus: non-seekable open handles growing file; stream thread reopens seekably after download. */
             struct stat st;
             if (stat(s_state.temp_path, &st) == 0 && st.st_size >= PREBUFFER_BYTES) {
                 Player_stop();
                 if (Player_load(s_state.temp_path) == 0) {
                     const PlexTrack *t = plex_queue_current_track();
                     int dur = t ? t->duration_ms : 0;
-                    if (s_state.transcode) {
-                        if (dur > 0) Player_setTotalFrames((int64_t)((dur / 1000.0) * 48000.0));
-                    }
-                    if (dur > 0) Player_setDurationMs(dur);
                     Player_setFileGrowing(true);
+                    if (s_state.transcode && dur > 0)
+                        Player_setTotalFrames((int64_t)((dur / 1000.0) * 48000.0));
+                    if (dur > 0) Player_setDurationMs(dur);
                     s_state.play_start_ticks = SDL_GetTicks();
                     Player_play();
                     s_state.download_pending = true;
