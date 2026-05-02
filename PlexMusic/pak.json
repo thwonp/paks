@@ -3,7 +3,9 @@
   "name": "Plex Music",
   "version": "v1.0.0",
   "description": "Plex music client for NextUI",
-  "platforms": ["tg5040"],
+  "platforms": [
+    "tg5040"
+  ],
   "author": "Thwonp",
   "repo_url": "https://github.com/thwonp/paks",
   "release_filename": "PlexMusic.pak.zip"
