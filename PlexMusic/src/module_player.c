@@ -844,6 +844,73 @@ static void player_module_quit_cleanup(PlayerScreenState screen_state)
 }
 
 /* ------------------------------------------------------------------
+ * Auto-advance helper — handles track-end logic common to both the
+ * awake and screen-sleeping paths.
+ *
+ * Returns true if the track ended and an action was taken (advance,
+ * repeat, or end-of-queue).  Returns false if the player is still
+ * running normally.
+ *
+ * When the end-of-queue is reached, *queue_ended is set to true and
+ * the caller is responsible for returning MODULE_BROWSE (and waking
+ * the screen if needed).
+ * ------------------------------------------------------------------ */
+
+static bool handle_track_end(const PlexConfig *cfg, PlexQueue *queue,
+                              PlayerScreenState *screen_state, bool *queue_ended)
+{
+    *queue_ended = false;
+
+    if (Player_getState() != PLAYER_STATE_STOPPED)
+        return false;
+
+    Background_setActive(BG_NONE);
+
+    /* Guard: cancel any in-progress download for the current track */
+    if (s_state.download_pending) {
+        s_state.dl_ctx.should_cancel = true;
+        Player_setFileGrowing(false);
+        pthread_join(s_state.dl_thread, NULL);
+        s_state.dl_thread_running = false;
+        s_state.download_pending  = false;
+    }
+    Player_stop();
+    if (!s_state.is_local_file) remove(s_state.temp_path);
+
+    if (queue->repeat_mode == REPEAT_ONE) {
+        plex_art_clear();
+        const PlexTrack *t = plex_queue_current_track();
+        if (t) plex_art_fetch(cfg, t->thumb);
+        s_state.transcode = (cfg->stream_bitrate_kbps > 0);
+        load_next_track(queue, screen_state);
+        return true;
+    }
+
+    if (plex_queue_has_next()) {
+        plex_queue_next(cfg);
+
+        plex_art_clear();
+        {
+            const PlexTrack *t = plex_queue_current_track();
+            if (t) plex_art_fetch(cfg, t->thumb);
+        }
+
+        s_state.transcode = (cfg->stream_bitrate_kbps > 0);
+        if (preload_consume(cfg)) {
+            s_state.is_local_file = false;
+            *screen_state = PLAYER_SCREEN_PLAYING;
+        } else {
+            load_next_track(queue, screen_state);
+        }
+        return true;
+    }
+
+    /* End of queue */
+    *queue_ended = true;
+    return true;
+}
+
+/* ------------------------------------------------------------------
  * Public entry point
  * ------------------------------------------------------------------ */
 
@@ -980,13 +1047,27 @@ AppModule module_player_run(SDL_Surface *screen)
             }
             bool woke = cfg->pocket_lock_enabled
                 ? (PAD_isPressed(BTN_MENU) && PAD_justPressed(BTN_SELECT))
-                : PAD_anyPressed();
+                : (PAD_anyPressed() && !PAD_isPressed(BTN_PLUS) && !PAD_isPressed(BTN_MINUS));
             if (woke) {
                 PLAT_enableBacklight(1);
                 s_screen_sleeping  = false;
                 s_last_activity_ms = SDL_GetTicks();
                 dirty = 1;
             }
+
+            /* Keep auto-advance alive while screen is off */
+            if (screen_state == PLAYER_SCREEN_PLAYING) {
+                Player_update();
+                bool queue_ended = false;
+                if (handle_track_end(cfg, queue, &screen_state, &queue_ended)) {
+                    if (queue_ended) {
+                        PLAT_enableBacklight(1);
+                        s_screen_sleeping = false;
+                        return MODULE_BROWSE;
+                    }
+                }
+            }
+
             GFX_sync();
             continue;  /* consume all other input while sleeping */
         }
@@ -1142,53 +1223,16 @@ AppModule module_player_run(SDL_Surface *screen)
             preload_tick(cfg);
 
             /* Auto-advance on track end */
-            if (Player_getState() == PLAYER_STATE_STOPPED) {
-                Background_setActive(BG_NONE);
-                /* download_pending should be false here (handled above), but
-                 * guard anyway */
-                if (s_state.download_pending) {
-                    s_state.dl_ctx.should_cancel = true;
-                    Player_setFileGrowing(false);
-                    pthread_join(s_state.dl_thread, NULL);
-                    s_state.dl_thread_running = false;
-                    s_state.download_pending  = false;
-                }
-                Player_stop();
-                if (!s_state.is_local_file) remove(s_state.temp_path);
-
-                if (queue->repeat_mode == REPEAT_ONE) {
-                    /* Reload current track without advancing queue */
-                    plex_art_clear();
-                    const PlexTrack *t = plex_queue_current_track();
-                    if (t) plex_art_fetch(cfg, t->thumb);
-                    s_state.transcode = (cfg->stream_bitrate_kbps > 0);
-                    load_next_track(queue, &screen_state);
-                    dirty = 1;
-                    goto render;
-                }
-
-                if (plex_queue_has_next()) {
-                    plex_queue_next(cfg);
-
-                    plex_art_clear();
-                    {
-                        const PlexTrack *t = plex_queue_current_track();
-                        if (t) plex_art_fetch(cfg, t->thumb);
-                    }
-
-                    s_state.transcode = (cfg->stream_bitrate_kbps > 0);
-                    if (preload_consume(cfg)) {
-                        s_state.is_local_file = false;
-                        screen_state = PLAYER_SCREEN_PLAYING;
-                    } else {
-                        load_next_track(queue, &screen_state);
+            {
+                bool queue_ended = false;
+                if (handle_track_end(cfg, queue, &screen_state, &queue_ended)) {
+                    if (queue_ended) {
+                        /* End of queue — already stopped; return to browse */
+                        if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
+                        return MODULE_BROWSE;
                     }
                     dirty = 1;
                     goto render;
-                } else {
-                    /* End of queue — already stopped above; just return to browse */
-                    if (s_screen_sleeping) { PLAT_enableBacklight(1); s_screen_sleeping = false; }
-                    return MODULE_BROWSE;
                 }
             }
 
