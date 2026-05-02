@@ -140,6 +140,7 @@ typedef struct {
     DownloadCtx dl_ctx;
     pthread_t   dl_thread;
     bool        dl_running;
+    bool        playing;   /* slot is currently being streamed; do not recycle */
 } PreloadSlot;
 
 /* ------------------------------------------------------------------
@@ -248,7 +249,7 @@ static void preload_cancel_all(void)
 {
     for (int i = 0; i < MAX_PRELOAD_SLOTS; i++) {
         PreloadSlot *ps = &s_state.preload[i];
-        if (ps->rating_key[0] == '\0') continue;
+        if (ps->rating_key[0] == '\0' && !ps->playing) continue;
         if (ps->dl_running) {
             ps->dl_ctx.should_cancel = true;
             pthread_join(ps->dl_thread, NULL);
@@ -256,6 +257,7 @@ static void preload_cancel_all(void)
         }
         remove(ps->path);
         ps->rating_key[0] = '\0';
+        ps->playing = false;
     }
 }
 
@@ -263,16 +265,9 @@ static void preload_tick(const PlexConfig *cfg)
 {
     if (cfg->preload_count <= 0 || cfg->offline_mode) return;
     /* Don't preload while the primary download is still running */
-    static bool s_tick_blocked_logged = false;
     if (s_state.download_pending || s_state.dl_thread_running) {
-        if (!s_tick_blocked_logged) {
-            PLEX_LOG("[Preload] tick blocked: pending=%d thread=%d\n",
-                     s_state.download_pending, s_state.dl_thread_running);
-            s_tick_blocked_logged = true;
-        }
         return;
     }
-    s_tick_blocked_logged = false;
 
     /* Join any preload download that has finished (success or failure) */
     for (int i = 0; i < MAX_PRELOAD_SLOTS; i++) {
@@ -282,12 +277,8 @@ static void preload_tick(const PlexConfig *cfg)
             pthread_join(ps->dl_thread, NULL);
             ps->dl_running = false;
             if (ps->dl_ctx.download_failed) {
-                PLEX_LOG("[Preload] slot %d download FAILED rk=%s\n", i, ps->rating_key);
                 remove(ps->path);
                 ps->rating_key[0] = '\0';
-            } else {
-                PLEX_LOG("[Preload] slot %d download DONE rk=%s path=%s\n",
-                         i, ps->rating_key, ps->path);
             }
         }
     }
@@ -314,12 +305,12 @@ static void preload_tick(const PlexConfig *cfg)
         }
         if (already) continue;
 
-        /* Find a free slot */
+        /* Find a free slot (skip slots still being streamed) */
         int slot = -1;
         for (int i = 0; i < MAX_PRELOAD_SLOTS; i++) {
-            if (s_state.preload[i].rating_key[0] == '\0') { slot = i; break; }
+            if (s_state.preload[i].rating_key[0] == '\0' && !s_state.preload[i].playing) { slot = i; break; }
         }
-        if (slot < 0) { PLEX_LOG("[Preload] no free slots\n"); return; }
+        if (slot < 0) { return; }
 
         /* Determine format */
         char ext[16];
@@ -340,9 +331,6 @@ static void preload_tick(const PlexConfig *cfg)
         PreloadSlot *ps = &s_state.preload[slot];
         build_preload_path(slot, ext, ps->path, sizeof(ps->path));
 
-        PLEX_LOG("[Preload] starting offset=%d rk=%s slot=%d ext=%s\n",
-                 offset, rk, slot, ext);
-
         /* Populate and launch */
         snprintf(ps->rating_key, sizeof(ps->rating_key), "%s", rk);
         snprintf(ps->ext, sizeof(ps->ext), "%s", ext);
@@ -361,12 +349,22 @@ static void preload_tick(const PlexConfig *cfg)
 static bool preload_consume(const PlexConfig *cfg)
 {
     (void)cfg;
+
+    /* Release any slot whose file we were streaming — the previous track just ended */
+    for (int i = 0; i < MAX_PRELOAD_SLOTS; i++) {
+        PreloadSlot *ps = &s_state.preload[i];
+        if (ps->playing) {
+            remove(ps->path);
+            ps->rating_key[0] = '\0';
+            ps->playing = false;
+        }
+    }
+
     const PlexTrack *t = plex_queue_current_track();
     if (!t || t->local_path[0] != '\0') return false;
 
     char rk[32];
     snprintf(rk, sizeof(rk), "%d", t->rating_key);
-    PLEX_LOG("[Preload] consume: checking for rk=%s\n", rk);
 
     for (int i = 0; i < MAX_PRELOAD_SLOTS; i++) {
         PreloadSlot *ps = &s_state.preload[i];
@@ -374,7 +372,6 @@ static bool preload_consume(const PlexConfig *cfg)
 
         /* Only use if the download completed successfully */
         if (!ps->dl_ctx.download_done) {
-            PLEX_LOG("[Preload] consume: found rk=%s but not done (running=%d), discarding\n", rk, ps->dl_running);
             if (ps->dl_running) {
                 ps->dl_ctx.should_cancel = true;
                 pthread_join(ps->dl_thread, NULL);
@@ -391,8 +388,6 @@ static bool preload_consume(const PlexConfig *cfg)
             ps->dl_running = false;
         }
 
-        PLEX_LOG("[Preload] consume: using preloaded file for rk=%s path=%s\n", rk, ps->path);
-
         /* Set up s_state to play from the preloaded file */
         strncpy(s_state.temp_path, ps->path,  sizeof(s_state.temp_path) - 1);
         strncpy(s_state.ext,       ps->ext,   sizeof(s_state.ext) - 1);
@@ -408,18 +403,17 @@ static bool preload_consume(const PlexConfig *cfg)
             Player_play();
             s_state.scrobbled        = false;
             s_state.last_timeline_ms = SDL_GetTicks();
-            /* Clear the slot AFTER successful load */
-            ps->rating_key[0] = '\0';
+            /* Mark slot as playing — slot stays occupied until next preload_consume
+             * call so the file is not overwritten while the stream thread reads it */
+            ps->playing = true;
             return true;
         }
 
-        PLEX_LOG("[Preload] consume: Player_load failed for rk=%s path=%s\n", rk, ps->path);
         remove(ps->path);
         ps->rating_key[0] = '\0';
         return false;
     }
 
-    PLEX_LOG("[Preload] consume: no match found for rk=%s, falling back to download\n", rk);
     return false; /* not found in preload cache */
 }
 
@@ -860,7 +854,6 @@ AppModule module_player_run(SDL_Surface *screen)
         s_state.last_timeline_ms   = 0;
 
         if (s_state.is_local_file) {
-            PLEX_LOG("[Player] Loading offline file: %s\n", s_state.temp_path);
             Player_setFileGrowing(false);
             if (Player_load(s_state.temp_path) == 0) {
                 s_state.play_start_ticks = SDL_GetTicks();

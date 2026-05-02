@@ -417,30 +417,52 @@ static int stream_decoder_open(StreamDecoder* sd, const char* filepath) {
             break;
         }
         case AUDIO_FORMAT_OPUS: {
-            /* Open in non-seekable mode (read-only callback, no seek/tell).
-             * opusfile sets _of->end = -1, disabling the boundary check that
-             * would otherwise stop decoding at the initial file size (512 KB).
-             * opus_read_cb retries while file_growing; when !file_growing it
-             * returns 0 to signal true EOF, which triggers the reopen path in
-             * stream_thread_func. */
-            FILE *f = fopen(filepath, "rb");
-            if (!f) {
-                PLEX_LOG_ERROR("Stream: Opus fopen failed: %s\n", filepath);
-                return -1;
+            if (player.file_growing) {
+                /* Progressive download: open non-seekably so opusfile does not bound-check
+                 * at the initial file size. opus_read_cb retries while growing; the stream
+                 * thread reopens seekably once the download completes. */
+                FILE *f = fopen(filepath, "rb");
+                if (!f) {
+                    PLEX_LOG_ERROR("Stream: Opus fopen failed: %s\n", filepath);
+                    return -1;
+                }
+                OpusFileCallbacks cbs = { opus_read_cb, NULL, NULL, NULL };
+                int error;
+                OggOpusFile *of = op_open_callbacks(f, &cbs, NULL, 0, &error);
+                if (!of) {
+                    fclose(f);
+                    PLEX_LOG_ERROR("Stream: Opus op_open_callbacks error=%d path=%s\n", error, filepath);
+                    return -1;
+                }
+                sd->decoder             = of;
+                sd->source_sample_rate  = 48000;
+                sd->file_handle         = f;
+                sd->source_channels     = 2;
+                sd->total_frames        = op_pcm_total(of, -1);  /* -1 for non-seekable; overridden by caller */
+            } else {
+                /* Fully downloaded file: open seekably so op_pcm_total is accurate and
+                 * seeking works immediately without a reopen pass. */
+                OpusFileCallbacks cbs;
+                FILE *f = (FILE *)op_fopen(&cbs, filepath, "rb");
+                if (!f) {
+                    PLEX_LOG_ERROR("Stream: Opus op_fopen failed: %s\n", filepath);
+                    return -1;
+                }
+                cbs.close = NULL;  /* stream_decoder_close owns the FILE* lifetime */
+                int error;
+                OggOpusFile *of = op_open_callbacks(f, &cbs, NULL, 0, &error);
+                if (!of) {
+                    fclose(f);
+                    PLEX_LOG_ERROR("Stream: Opus op_open_callbacks (seekable) error=%d path=%s\n", error, filepath);
+                    return -1;
+                }
+                sd->decoder             = of;
+                sd->source_sample_rate  = 48000;
+                sd->file_handle         = f;
+                sd->source_channels     = 2;
+                sd->total_frames        = op_pcm_total(of, -1);  /* accurate for seekable open */
+                player.opus_reopened    = true;  /* skip seek no-op guard; no reopen needed */
             }
-            OpusFileCallbacks cbs = { opus_read_cb, NULL, NULL, NULL };  /* read-only, non-seekable */
-            int error;
-            OggOpusFile *of = op_open_callbacks(f, &cbs, NULL, 0, &error);
-            if (!of) {
-                fclose(f);
-                PLEX_LOG_ERROR("Stream: Opus op_open_callbacks error=%d path=%s\n", error, filepath);
-                return -1;
-            }
-            sd->decoder        = of;
-            sd->source_sample_rate = 48000;  /* Opus always decodes at 48kHz */
-            sd->file_handle    = f;          /* owned here; closed in stream_decoder_close */
-            sd->source_channels = 2;         /* op_read_stereo() always outputs stereo */
-            sd->total_frames   = op_pcm_total(of, -1);  /* -1 for non-seekable; overridden by caller */
             break;
         }
         case AUDIO_FORMAT_M4A: {
@@ -1265,6 +1287,63 @@ static void* stream_thread_func(void* arg) {
             player.stream_seeking = false;
         }
 
+        // Proactive reopen: download completed while stream thread is mid-file
+        if (player.opus_reopen_requested && !player.opus_reopened) {
+            player.opus_reopen_requested = false;
+            // --- perform reopen (same logic as the decoded==0 path below) ---
+            int64_t save_frame = player.stream_decoder.current_frame;
+            char save_path[512];
+            strncpy(save_path, player.stream_decoder.filepath, sizeof(save_path) - 1);
+            save_path[sizeof(save_path) - 1] = '\0';
+            stream_decoder_close(&player.stream_decoder);
+            OpusFileCallbacks cbs;
+            FILE *f = (FILE *)op_fopen(&cbs, save_path, "rb");
+            if (f) {
+                cbs.close = NULL;
+                int err;
+                OggOpusFile *of = op_open_callbacks(f, &cbs, NULL, 0, &err);
+                if (of) {
+                    memset(&player.stream_decoder, 0, sizeof(player.stream_decoder));
+                    player.stream_decoder.format             = AUDIO_FORMAT_OPUS;
+                    player.stream_decoder.decoder            = of;
+                    player.stream_decoder.file_handle        = f;
+                    player.stream_decoder.source_sample_rate = 48000;
+                    player.stream_decoder.source_channels    = 2;
+                    strncpy(player.stream_decoder.filepath, save_path,
+                            sizeof(player.stream_decoder.filepath) - 1);
+                    player.stream_decoder.filepath[sizeof(player.stream_decoder.filepath) - 1] = '\0';
+                    ogg_int64_t real_total = op_pcm_total(of, -1);
+                    player.stream_decoder.total_frames =
+                        (real_total > 0) ? real_total : player.stream_decoder.total_frames;
+                    int64_t save_frame_before_clamp = save_frame;
+                    if (real_total > 0 && save_frame >= real_total)
+                        save_frame = real_total - 1;
+                    int seek_rc = op_pcm_seek(of, save_frame);
+                    if (seek_rc != 0) {
+                        player.stream_eof = true;
+                        player.opus_reopened = true;
+                    } else {
+                        player.stream_decoder.current_frame = save_frame;
+                        player.opus_reopened = true;
+                    }
+                } else {
+                    fclose(f);
+                    PLEX_LOG_ERROR("[Player] Proactive Opus reopen op_open_callbacks failed err=%d\n", err);
+                    player.stream_eof = true;
+                }
+            } else {
+                PLEX_LOG_ERROR("[Player] Proactive Opus reopen op_fopen failed: %s\n", save_path);
+                player.stream_eof = true;
+            }
+            continue;
+        }
+
+        // Already at EOF — sleep until audio callback stops the thread
+        if (player.stream_eof) {
+            usleep(5000);
+            continue;
+        }
+
         // Check if buffer needs more data (< 50% full)
         size_t available = circular_buffer_available(&player.stream_buffer);
         if (available < STREAM_BUFFER_FRAMES / 2) {
@@ -1307,10 +1386,19 @@ static void* stream_thread_func(void* arg) {
                             ogg_int64_t real_total = op_pcm_total(of, -1);
                             player.stream_decoder.total_frames =
                                 (real_total > 0) ? real_total : player.stream_decoder.total_frames;
-                            op_pcm_seek(of, save_frame);
-                            player.stream_decoder.current_frame = save_frame;
-                            player.opus_reopened = true;
-                            /* continue — don't set stream_eof */
+                            int64_t save_frame_before_clamp = save_frame;
+                            if (real_total > 0 && save_frame >= real_total)
+                                save_frame = real_total - 1;
+                            int seek_rc = op_pcm_seek(of, save_frame);
+                            if (seek_rc != 0) {
+                                /* Seek failed — treat as EOF rather than replaying from start */
+                                player.stream_eof = true;
+                                player.opus_reopened = true;
+                            } else {
+                                player.stream_decoder.current_frame = save_frame;
+                                player.opus_reopened = true;
+                                /* continue — don't set stream_eof */
+                            }
                         } else {
                             fclose(f);
                             PLEX_LOG_ERROR("[Player] Opus reopen op_open_callbacks failed err=%d\n", err);
@@ -2212,6 +2300,8 @@ void Player_setSampleRate(int sample_rate) {
 
 // Load file using streaming playback (decode on-the-fly)
 static int load_streaming(const char* filepath) {
+    // Reset before opening decoder; stream_decoder_open may set opus_reopened=true
+    player.opus_reopened = false;
     // Open decoder
     if (stream_decoder_open(&player.stream_decoder, filepath) != 0) {
         return -1;
@@ -2251,7 +2341,8 @@ static int load_streaming(const char* filepath) {
     player.stream_running = true;
     player.stream_seeking = false;
     player.stream_eof = false;
-    player.opus_reopened = false;
+    player.opus_reopen_requested = false;
+    player.file_was_growing = false;
     pthread_create(&player.stream_thread, NULL, stream_thread_func, NULL);
 
     // Pre-buffer some audio before returning (~0.5 seconds)
@@ -2420,8 +2511,16 @@ void Player_stop(void) {
 void Player_setFileGrowing(bool growing) {
     player.file_growing = growing;
     if (growing) {
+        player.file_was_growing = true;
         player.stream_eof = false;
         player.stream_decoder.total_frames = INT64_MAX;
+    } else {
+        // Request proactive reopen if this was a progressive Opus download
+        if (player.file_was_growing
+                && player.stream_decoder.format == AUDIO_FORMAT_OPUS
+                && !player.opus_reopened) {
+            player.opus_reopen_requested = true;
+        }
     }
 }
 
@@ -2456,6 +2555,12 @@ void Player_seek(int position_ms) {
     }
 
     if (player.use_streaming) {
+        /* Opus before reopen is non-seekable; silently ignore seek requests
+         * to avoid desyncing the display from the decoder. */
+        if (player.stream_decoder.format == AUDIO_FORMAT_OPUS && !player.opus_reopened) {
+            pthread_mutex_unlock(&player.mutex);
+            return;
+        }
         // Streaming mode: signal decode thread to seek
         // Calculate target frame in source sample rate
         int64_t target_frame = (int64_t)position_ms * player.stream_decoder.source_sample_rate / 1000;

@@ -109,6 +109,8 @@ typedef struct {
     bool stream_eof;            // True when decoder has reached end of file
     volatile bool file_growing; // true = file is still being downloaded; don't treat EOF as real EOF
     bool opus_reopened;         // true after non-seekable Opus stream has been reopened seekably
+    bool file_was_growing;      // set when file_growing goes true; cleared in load_streaming
+    bool opus_reopen_requested; // set when download completes; cleared in load_streaming and after reopen
 
     // Resampler leftover buffer (for unconsumed input frames)
     int16_t* resample_leftover;
