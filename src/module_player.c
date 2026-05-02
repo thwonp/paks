@@ -1143,6 +1143,14 @@ AppModule module_player_run(SDL_Surface *screen)
 
             /* Keep auto-advance alive while screen is off */
             if (screen_state == PLAYER_SCREEN_PLAYING) {
+                if (s_state.download_pending) {
+                    if (s_state.dl_ctx.download_done || s_state.dl_ctx.download_failed) {
+                        pthread_join(s_state.dl_thread, NULL);
+                        s_state.dl_thread_running = false;
+                        Player_setFileGrowing(false);
+                        s_state.download_pending = false;
+                    }
+                }
                 Player_update();
                 bool queue_ended = false;
                 if (handle_track_end(cfg, queue, &screen_state, &queue_ended)) {
