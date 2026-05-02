@@ -1,8 +1,12 @@
 # PlexMusic.pak
 
+**NOTE: I highly recommend updating [stock firmware](https://trimui.com/pages/trimui-brick-firmware) to the latest update. I noticed greatly improved wifi stability on v1.1.1**
+
+Plex Pass is required for transcoding (which is set by default). If you do not have Plex Pass, you can change the quality presets to "Original" in Settings.
+
 ## What is this?
 
-PlexMusic.pak is a music player for the TrimUI Brick that streams music from a Plex Media Server. It runs natively (SDL2, no interpreter), cross-compiled for ARM aarch64. Installed as a NextUI pak, it appears in the Apps menu.
+PlexMusic.pak is a music player for the TrimUI Brick that streams music from a Plex Media Server. It runs natively (SDL3, no interpreter), cross-compiled for ARM aarch64. Installed as a NextUI pak, it appears in the Apps->Tools menu.
 
 ## Features
 
@@ -15,13 +19,11 @@ PlexMusic.pak is a music player for the TrimUI Brick that streams music from a P
 - Streams MP3, FLAC, WAV, M4A, AAC, OGG, and Opus
 - Set transcode quality for Opus conversions
 - Progressive playback — audio starts within ~2–3 s; no waiting for the full track to download
-  - Note: Only when Original quality is set — WIP on getting this working for transcodes
 - Scrobbles plays back to your Plex server
 
 **Offline**
-- Download albums from the browse screen (Y button on any album)
+- Full offline mode: browse and play downloaded albums and favorites list without a network connection
 - Set download quality targets (original or Opus transcode)
-- Full offline mode: browse and play downloaded albums without a network connection
 - Offline Artists and Albums views mirror the online experience
 - Warning prompt if you try to switch to offline while a download is in progress
 
@@ -42,21 +44,14 @@ PlexMusic.pak is a music player for the TrimUI Brick that streams music from a P
 - D-pad left/right: tap = skip track, hold = seek ±5 s
 - Queue auto-advances through an album during background playback
 - Configurable screen sleep timeout
-- MENU+SELECT wakes the screen from sleep
+- MENU+SELECT wakes the screen from sleep when pocket lockout is enabled
 - MENU+START quits from anywhere instantly
 - Settings: switch server, sign out, change library, seek interval, transcode options
-
-## Planned Features
-
-- Bug hunting + more testing
-- Playlists
-- Custom sort options
-- Other QoL stuff and features as I think of them (or as requested)
 
 ## Installation
 
 ```
-Roms/APPS/PlexMusic.pak/
+Tools/tg5040/PlexMusic.pak/
   launch.sh
   pak.json
   res/
@@ -66,7 +61,7 @@ Roms/APPS/PlexMusic.pak/
     libmsettings.so
 ```
 
-1. Copy the above directory structure to your SD card under `Roms/APPS/`.
+1. Copy the above directory structure to your SD card under `Tools/tg5040/`.
 2. The pak will appear in NextUI's Apps menu.
 
 ## Controls
