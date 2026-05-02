@@ -67,6 +67,8 @@ typedef struct {
     char media_key[PLEX_MAX_URL];    /* streaming path, e.g. /library/parts/123/... */
     char thumb[PLEX_MAX_URL];
     char local_path[768];            /* non-empty = offline: skip download, play this file */
+    char audio_codec[32];            /* e.g. "flac", "mp3", "opus", "aac" */
+    int  audio_bitrate_kbps;         /* 0 if unknown */
 } PlexTrack;
 
 /* Generic paginated result */

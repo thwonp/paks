@@ -40,16 +40,18 @@
  * Internal types
  * ------------------------------------------------------------------ */
 
-/* One track as stored in the manifest (no media_key — not needed after download). */
+/* One track as stored in the manifest. */
 typedef struct {
     int  track_id;
     int  track_number;
     int  duration_ms;
+    int  bitrate_kbps;   /* download bitrate (kbps); 0 if unknown */
     char title[PLEX_MAX_STR];
     char artist[PLEX_MAX_STR];
     char album[PLEX_MAX_STR];
     char thumb[PLEX_MAX_URL];
     char local_path[768];
+    char media_key[PLEX_MAX_URL];
 } ManifestTrack;
 
 /* One album as stored in the manifest. */
@@ -399,8 +401,10 @@ static void manifest_save_locked(void)
             json_object_set_string(trk_obj, "album",        mt->album);
             json_object_set_number(trk_obj, "track_number", (double)mt->track_number);
             json_object_set_number(trk_obj, "duration_ms",  (double)mt->duration_ms);
+            json_object_set_number(trk_obj, "bitrate_kbps", (double)mt->bitrate_kbps);
             json_object_set_string(trk_obj, "thumb",        mt->thumb);
             json_object_set_string(trk_obj, "local_path",   mt->local_path);
+            json_object_set_string(trk_obj, "media_key",    mt->media_key);
 
             json_array_append_value(tracks_a, trk_v);
         }
@@ -510,6 +514,7 @@ static void manifest_load(void)
                 mt.track_id     = (int)json_object_get_number(trk_obj, "track_id");
                 mt.track_number = (int)json_object_get_number(trk_obj, "track_number");
                 mt.duration_ms  = (int)json_object_get_number(trk_obj, "duration_ms");
+                mt.bitrate_kbps = (int)json_object_get_number(trk_obj, "bitrate_kbps");
 
                 if ((s = json_object_get_string(trk_obj, "title")))
                     strncpy(mt.title, s, sizeof(mt.title) - 1);
@@ -521,6 +526,8 @@ static void manifest_load(void)
                     strncpy(mt.thumb, s, sizeof(mt.thumb) - 1);
                 if ((s = json_object_get_string(trk_obj, "local_path")))
                     strncpy(mt.local_path, s, sizeof(mt.local_path) - 1);
+                s = json_object_get_string(trk_obj, "media_key");
+                if (s) strncpy(mt.media_key, s, sizeof(mt.media_key) - 1);
 
                 if (!grow_tracks(g_track_count + 1)) break;
                 g_tracks[g_track_count++] = mt;
@@ -713,11 +720,13 @@ static void *download_worker(void *arg)
                 mt.track_id     = t->rating_key;
                 mt.track_number = t->track_number;
                 mt.duration_ms  = t->duration_ms;
+                mt.bitrate_kbps = (dl_bitrate > 0) ? dl_bitrate : t->audio_bitrate_kbps;
                 strncpy(mt.title,      t->title,     sizeof(mt.title) - 1);
                 strncpy(mt.artist,     t->artist,    sizeof(mt.artist) - 1);
                 strncpy(mt.album,      t->album,     sizeof(mt.album) - 1);
                 strncpy(mt.thumb,      t->thumb,     sizeof(mt.thumb) - 1);
                 strncpy(mt.local_path, local_path,   sizeof(mt.local_path) - 1);
+                strncpy(mt.media_key,  t->media_key, sizeof(mt.media_key) - 1);
 
                 pthread_mutex_lock(&g_mutex);
                 g_active_completed = work_track_count + 1;
@@ -868,11 +877,13 @@ static void *download_worker(void *arg)
                 mt.track_id     = t->rating_key;
                 mt.track_number = t->track_number;
                 mt.duration_ms  = t->duration_ms;
+                mt.bitrate_kbps = (dl_bitrate > 0) ? dl_bitrate : t->audio_bitrate_kbps;
                 strncpy(mt.title,      t->title,      sizeof(mt.title) - 1);
                 strncpy(mt.artist,     t->artist,     sizeof(mt.artist) - 1);
                 strncpy(mt.album,      t->album,      sizeof(mt.album) - 1);
                 strncpy(mt.thumb,      t->thumb,      sizeof(mt.thumb) - 1);
                 strncpy(mt.local_path, local_path,    sizeof(mt.local_path) - 1);
+                strncpy(mt.media_key,  t->media_key,  sizeof(mt.media_key) - 1);
 
                 /* Find or create the favorites manifest album */
                 int fav_idx = -1;
@@ -1408,6 +1419,12 @@ int plex_downloads_get_tracks_for_album(int album_id,
             strncpy(out[j].album,      mt->album,      sizeof(out[j].album) - 1);
             strncpy(out[j].thumb,      mt->thumb,      sizeof(out[j].thumb) - 1);
             strncpy(out[j].local_path, mt->local_path, sizeof(out[j].local_path) - 1);
+            strncpy(out[j].media_key,  mt->media_key,  sizeof(out[j].media_key) - 1);
+            out[j].audio_bitrate_kbps = mt->bitrate_kbps;
+            /* Derive codec from local_path extension (e.g. ".opus" -> "opus") */
+            const char *dot = strrchr(mt->local_path, '.');
+            if (dot && *(dot + 1))
+                strncpy(out[j].audio_codec, dot + 1, sizeof(out[j].audio_codec) - 1);
         }
         pthread_mutex_unlock(&g_mutex);
         return n;
@@ -1429,6 +1446,12 @@ static void manifest_track_to_plex(int track_idx, PlexTrack *out)
     strncpy(out->album,      mt->album,      sizeof(out->album) - 1);
     strncpy(out->thumb,      mt->thumb,      sizeof(out->thumb) - 1);
     strncpy(out->local_path, mt->local_path, sizeof(out->local_path) - 1);
+    strncpy(out->media_key,  mt->media_key,  sizeof(out->media_key) - 1);
+    out->audio_bitrate_kbps = mt->bitrate_kbps;
+    /* Derive codec from local_path extension (e.g. ".opus" -> "opus") */
+    const char *dot = strrchr(mt->local_path, '.');
+    if (dot && *(dot + 1))
+        strncpy(out->audio_codec, dot + 1, sizeof(out->audio_codec) - 1);
 }
 
 int plex_downloads_get_favorite_tracks(PlexTrack *out, int out_max)

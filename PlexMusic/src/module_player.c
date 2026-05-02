@@ -6,6 +6,7 @@
 #include <string.h>
 #include <strings.h>
 #include <stdbool.h>
+#include <ctype.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -160,6 +161,7 @@ typedef struct {
     uint32_t     last_timeline_ms;
     uint32_t     play_start_ticks;
     int          transcode;          /* cfg->stream_bitrate_kbps > 0 at track-start time */
+    char         badge_str[32];      /* e.g. "FLAC 44", "OPUS 256", "MP3 320"; "" = hide */
     PreloadSlot  preload[MAX_PRELOAD_SLOTS];
 } PlayerModuleState;
 
@@ -346,6 +348,52 @@ static void preload_tick(const PlexConfig *cfg)
     }
 }
 
+/* ------------------------------------------------------------------
+ * Codec badge helper
+ * ------------------------------------------------------------------ */
+
+static void build_badge_str(const PlexTrack *t, bool transcode,
+                             int stream_bitrate_kbps, int sample_rate_hz,
+                             char *out, int out_size)
+{
+    out[0] = '\0';
+
+    char codec[32] = "";
+    if (transcode) {
+        strncpy(codec, "OPUS", sizeof(codec) - 1);
+    } else if (t->audio_codec[0]) {
+        for (int i = 0; t->audio_codec[i] && i < (int)sizeof(codec) - 1; i++)
+            codec[i] = (char)toupper((unsigned char)t->audio_codec[i]);
+    }
+    if (!codec[0]) return;
+
+    if (transcode) {
+        if (stream_bitrate_kbps > 0)
+            snprintf(out, out_size, "%s %d", codec, stream_bitrate_kbps);
+        else
+            snprintf(out, out_size, "%s", codec);
+        return;
+    }
+
+    bool lossless = (strcmp(t->audio_codec, "flac") == 0 ||
+                     strcmp(t->audio_codec, "wav")  == 0 ||
+                     strcmp(t->audio_codec, "alac") == 0 ||
+                     strcmp(t->audio_codec, "aiff") == 0 ||
+                     strcmp(t->audio_codec, "pcm")  == 0);
+
+    if (lossless && sample_rate_hz > 0) {
+        float khz = sample_rate_hz / 1000.0f;
+        if (khz == (float)(int)khz)
+            snprintf(out, out_size, "%s %d", codec, (int)khz);
+        else
+            snprintf(out, out_size, "%s %.1f", codec, khz);
+    } else if (!lossless && t->audio_bitrate_kbps > 0) {
+        snprintf(out, out_size, "%s %d", codec, t->audio_bitrate_kbps);
+    } else {
+        snprintf(out, out_size, "%s", codec);
+    }
+}
+
 static bool preload_consume(const PlexConfig *cfg)
 {
     (void)cfg;
@@ -403,6 +451,9 @@ static bool preload_consume(const PlexConfig *cfg)
             Player_play();
             s_state.scrobbled        = false;
             s_state.last_timeline_ms = SDL_GetTicks();
+            build_badge_str(t, s_state.transcode && !s_state.is_local_file, cfg->stream_bitrate_kbps,
+                            Player_getTrackInfo()->sample_rate,
+                            s_state.badge_str, sizeof(s_state.badge_str));
             /* Mark slot as playing — slot stays occupied until next preload_consume
              * call so the file is not overwritten while the stream thread reads it */
             ps->playing = true;
@@ -660,6 +711,17 @@ static void render_playing_screen(SDL_Surface *screen,
     snprintf(time_label, sizeof(time_label), "%s / %s", pos_str, dur_str);
     render_text_centered(screen, Fonts_getSmall(), gray, time_label, time_y);
 
+    /* Codec/quality badge — top-right corner */
+    if (s_state.badge_str[0]) {
+        SDL_Color badge_gray = { 180, 180, 180, 255 };
+        SDL_Surface *badge = TTF_RenderUTF8_Blended(Fonts_getSmall(), s_state.badge_str, badge_gray);
+        if (badge) {
+            SDL_Rect dst = { screen->w - PADDING - badge->w, PADDING, badge->w, badge->h };
+            SDL_BlitSurface(badge, NULL, screen, &dst);
+            SDL_FreeSurface(badge);
+        }
+    }
+
     GFX_flip(screen);
 }
 
@@ -738,6 +800,13 @@ static void load_next_track(PlexQueue *queue,
             Player_play();
             if (t->duration_ms > 0) Player_setDurationMs(t->duration_ms);
             if (screen_state) *screen_state = PLAYER_SCREEN_PLAYING;
+            {
+                const PlexConfig *lnt_cfg = plex_config_get_mutable();
+                build_badge_str(t, s_state.transcode && !s_state.is_local_file,
+                                lnt_cfg ? lnt_cfg->stream_bitrate_kbps : 0,
+                                Player_getTrackInfo()->sample_rate,
+                                s_state.badge_str, sizeof(s_state.badge_str));
+            }
         } else {
             PLEX_LOG_ERROR("[Player] Player_load failed (offline): %s\n", s_state.temp_path);
             if (screen_state) *screen_state = PLAYER_SCREEN_ERROR;
@@ -814,6 +883,7 @@ AppModule module_player_run(SDL_Surface *screen)
 
         /* Stop player and clear old temp file; prevents progressive-start from firing on
          * stale data before the new download has written anything. */
+        s_state.badge_str[0] = '\0';
         Player_stop();
         if (!s_state.is_local_file && s_state.temp_path[0])
             remove(s_state.temp_path);
@@ -863,6 +933,9 @@ AppModule module_player_run(SDL_Surface *screen)
                 screen_state             = PLAYER_SCREEN_PLAYING;
                 const PlexTrack *cur = plex_queue_current_track();
                 if (cur && cur->duration_ms > 0) Player_setDurationMs(cur->duration_ms);
+                build_badge_str(cur, s_state.transcode && !s_state.is_local_file, cfg->stream_bitrate_kbps,
+                                Player_getTrackInfo()->sample_rate,
+                                s_state.badge_str, sizeof(s_state.badge_str));
             } else {
                 PLEX_LOG_ERROR("[Player] Player_load failed (offline): %s\n", s_state.temp_path);
                 screen_state = PLAYER_SCREEN_ERROR;
@@ -972,6 +1045,12 @@ AppModule module_player_run(SDL_Surface *screen)
                     s_state.last_timeline_ms = SDL_GetTicks();
                     screen_state             = PLAYER_SCREEN_PLAYING;
                     dirty                    = 1;
+                    {
+                        const PlexTrack *t = plex_queue_current_track();
+                        if (t) build_badge_str(t, s_state.transcode && !s_state.is_local_file, cfg->stream_bitrate_kbps,
+                                               Player_getTrackInfo()->sample_rate,
+                                               s_state.badge_str, sizeof(s_state.badge_str));
+                    }
                 } else {
                     if (!s_state.is_local_file) remove(s_state.temp_path);
                     PLEX_LOG_ERROR("[Player] Player_load failed: %s\n", s_state.temp_path);
@@ -1014,6 +1093,9 @@ AppModule module_player_run(SDL_Surface *screen)
                         s_state.last_timeline_ms    = SDL_GetTicks();
                         screen_state                = PLAYER_SCREEN_PLAYING;
                         dirty                       = 1;
+                        if (t) build_badge_str(t, s_state.transcode && !s_state.is_local_file, cfg->stream_bitrate_kbps,
+                                               Player_getTrackInfo()->sample_rate,
+                                               s_state.badge_str, sizeof(s_state.badge_str));
                         goto render;
                     }
                     /* Player_load failed (e.g. M4A moov at end) — fall through to full download */
@@ -1333,6 +1415,9 @@ AppModule module_player_run(SDL_Surface *screen)
                             s_state.last_timeline_ms = SDL_GetTicks();
                             screen_state             = PLAYER_SCREEN_PLAYING;
                             if (t->duration_ms > 0) Player_setDurationMs(t->duration_ms);
+                            build_badge_str(t, s_state.transcode && !s_state.is_local_file, cfg->stream_bitrate_kbps,
+                                            Player_getTrackInfo()->sample_rate,
+                                            s_state.badge_str, sizeof(s_state.badge_str));
                         } else {
                             PLEX_LOG_ERROR("[Player] Player_load retry failed (offline): %s\n",
                                            s_state.temp_path);
@@ -1461,6 +1546,9 @@ void PlayerModule_backgroundTick(void)
                 if (Player_load(s_state.temp_path) == 0) {
                     s_state.play_start_ticks = SDL_GetTicks();
                     Player_play();
+                    build_badge_str(t, s_state.transcode && !s_state.is_local_file, cfg->stream_bitrate_kbps,
+                                    Player_getTrackInfo()->sample_rate,
+                                    s_state.badge_str, sizeof(s_state.badge_str));
                 } else { Background_setActive(BG_NONE); return; }
                 s_state.scrobbled = false;
                 s_state.last_timeline_ms = SDL_GetTicks();
@@ -1503,6 +1591,9 @@ void PlayerModule_backgroundTick(void)
                     if (Player_load(s_state.temp_path) == 0) {
                         s_state.play_start_ticks = SDL_GetTicks();
                         Player_play();
+                        build_badge_str(t, s_state.transcode && !s_state.is_local_file, cfg->stream_bitrate_kbps,
+                                        Player_getTrackInfo()->sample_rate,
+                                        s_state.badge_str, sizeof(s_state.badge_str));
                     } else {
                         PLEX_LOG_ERROR("[Player] BG auto-advance: Player_load failed (offline): %s\n",
                                        s_state.temp_path);
@@ -1555,6 +1646,14 @@ void PlayerModule_backgroundTick(void)
                 Player_play();
                 s_state.scrobbled        = false;
                 s_state.last_timeline_ms = SDL_GetTicks();
+                {
+                    const PlexTrack *t  = plex_queue_current_track();
+                    const PlexConfig *bg_cfg = plex_config_get_mutable();
+                    if (t && bg_cfg)
+                        build_badge_str(t, s_state.transcode && !s_state.is_local_file, bg_cfg->stream_bitrate_kbps,
+                                        Player_getTrackInfo()->sample_rate,
+                                        s_state.badge_str, sizeof(s_state.badge_str));
+                }
             } else {
                 PLEX_LOG_ERROR("[Player] BG: Player_load failed after full download: %s\n",
                                s_state.temp_path);
@@ -1589,6 +1688,13 @@ void PlayerModule_backgroundTick(void)
                     s_state.download_pending = true;
                     s_state.scrobbled        = false;
                     s_state.last_timeline_ms = SDL_GetTicks();
+                    {
+                        const PlexConfig *bg_cfg = plex_config_get_mutable();
+                        if (t && bg_cfg)
+                            build_badge_str(t, s_state.transcode && !s_state.is_local_file, bg_cfg->stream_bitrate_kbps,
+                                            Player_getTrackInfo()->sample_rate,
+                                            s_state.badge_str, sizeof(s_state.badge_str));
+                    }
                 }
                 /* If Player_load failed, wait for full download to complete */
             }

@@ -417,7 +417,7 @@ int plex_api_get_albums(const PlexConfig *cfg, int artist_rating_key,
  * GET {server_url}/library/metadata/{album_rating_key}/children
  * Response: MediaContainer.Metadata[]
  *   ratingKey, title, grandparentTitle, parentTitle, duration, index,
- *   thumb, Media[0].Part[0].key
+ *   thumb, Media[0].Part[0].key, Media[0].audioCodec, Media[0].bitrate
  * ------------------------------------------------------------------ */
 int plex_api_get_tracks(const PlexConfig *cfg, int album_rating_key,
                         PlexTrack tracks[], int *count)
@@ -461,11 +461,16 @@ int plex_api_get_tracks(const PlexConfig *cfg, int album_rating_key,
         if (album)  strncpy(t->album,  album,  sizeof(t->album) - 1);
         if (thumb)  strncpy(t->thumb,  thumb,  sizeof(t->thumb) - 1);
 
-        /* Extract media_key from Media[0].Part[0].key */
+        /* Extract media_key from Media[0].Part[0].key;
+         * also parse Media[0].audioCodec and Media[0].bitrate */
         JSON_Array *media_arr = json_object_get_array(item, "Media");
         if (media_arr && json_array_get_count(media_arr) > 0) {
             JSON_Object *media = json_array_get_object(media_arr, 0);
             if (media) {
+                const char *codec = json_object_get_string(media, "audioCodec");
+                if (codec) strncpy(t->audio_codec, codec, sizeof(t->audio_codec) - 1);
+                t->audio_bitrate_kbps = (int)json_object_get_number(media, "bitrate");
+
                 JSON_Array *part_arr = json_object_get_array(media, "Part");
                 if (part_arr && json_array_get_count(part_arr) > 0) {
                     JSON_Object *part = json_array_get_object(part_arr, 0);
