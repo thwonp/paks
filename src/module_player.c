@@ -911,6 +911,92 @@ static bool handle_track_end(const PlexConfig *cfg, PlexQueue *queue,
 }
 
 /* ------------------------------------------------------------------
+ * DOWNLOADING state helper — checks for completion, failure, and the
+ * progressive-start threshold.  Transitions *screen_state to PLAYING or
+ * ERROR.  Returns true if the state changed (caller should redraw if
+ * awake).  Does NOT touch dirty, BTN_B, or goto render — those belong
+ * to the awake path only.
+ * ------------------------------------------------------------------ */
+
+static bool handle_downloading_state(const PlexConfig *cfg, int *screen_state)
+{
+    /* Full download finished */
+    if (s_state.dl_ctx.download_done) {
+        pthread_join(s_state.dl_thread, NULL);
+        s_state.dl_thread_running = false;
+        s_state.download_pending  = false;
+
+        Player_stop();
+        if (Player_load(s_state.temp_path) == 0) {
+            if (s_state.transcode) {
+                const PlexTrack *t = plex_queue_current_track();
+                int dur = t ? t->duration_ms : 0;
+                if (dur > 0) Player_setTotalFrames((int64_t)((dur / 1000.0) * 48000.0));
+            }
+            s_state.play_start_ticks = SDL_GetTicks();
+            Player_play();
+            s_state.scrobbled        = false;
+            s_state.last_timeline_ms = SDL_GetTicks();
+            *screen_state            = PLAYER_SCREEN_PLAYING;
+            {
+                const PlexTrack *t = plex_queue_current_track();
+                if (t) build_badge_str(t, s_state.transcode && !s_state.is_local_file, cfg->stream_bitrate_kbps,
+                                       Player_getTrackInfo()->sample_rate,
+                                       s_state.badge_str, sizeof(s_state.badge_str));
+            }
+        } else {
+            if (!s_state.is_local_file) remove(s_state.temp_path);
+            PLEX_LOG_ERROR("[Player] Player_load failed: %s\n", s_state.temp_path);
+            *screen_state = PLAYER_SCREEN_ERROR;
+        }
+        return true;
+    }
+
+    /* Download failed */
+    if (s_state.dl_ctx.download_failed) {
+        pthread_join(s_state.dl_thread, NULL);
+        s_state.dl_thread_running = false;
+        *screen_state = PLAYER_SCREEN_ERROR;
+        return true;
+    }
+
+    /* Progressive start: try to begin playback once 512 KB are on disk */
+    if (!s_state.download_pending
+            && (strcasecmp(s_state.ext, "mp3") == 0
+                || strcasecmp(s_state.ext, "flac") == 0
+                || strcasecmp(s_state.ext, "wav") == 0
+                || strcasecmp(s_state.ext, "m4a") == 0
+                || strcasecmp(s_state.ext, "opus") == 0)) {
+        struct stat st;
+        if (stat(s_state.temp_path, &st) == 0 && st.st_size >= PREBUFFER_BYTES) {
+            Player_stop();
+            Player_setFileGrowing(true);
+            if (Player_load(s_state.temp_path) == 0) {
+                Player_setFileGrowing(true);  /* restore file_was_growing wiped by load_streaming() */
+                const PlexTrack *t = plex_queue_current_track();
+                int dur = t ? t->duration_ms : 0;
+                if (s_state.transcode && dur > 0)
+                    Player_setTotalFrames((int64_t)((dur / 1000.0) * 48000.0));
+                if (dur > 0) Player_setDurationMs(dur);
+                s_state.play_start_ticks = SDL_GetTicks();
+                Player_play();
+                s_state.download_pending    = true;
+                s_state.scrobbled           = false;
+                s_state.last_timeline_ms    = SDL_GetTicks();
+                *screen_state               = PLAYER_SCREEN_PLAYING;
+                if (t) build_badge_str(t, s_state.transcode && !s_state.is_local_file, cfg->stream_bitrate_kbps,
+                                       Player_getTrackInfo()->sample_rate,
+                                       s_state.badge_str, sizeof(s_state.badge_str));
+                return true;
+            }
+            /* Player_load failed (e.g. M4A moov at end) — wait for full download */
+        }
+    }
+
+    return false;
+}
+
+/* ------------------------------------------------------------------
  * Public entry point
  * ------------------------------------------------------------------ */
 
@@ -1067,6 +1153,9 @@ AppModule module_player_run(SDL_Surface *screen)
                     }
                 }
             }
+            if (screen_state == PLAYER_SCREEN_DOWNLOADING) {
+                handle_downloading_state(cfg, &screen_state);
+            }
 
             GFX_sync();
             continue;  /* consume all other input while sleeping */
@@ -1106,84 +1195,9 @@ AppModule module_player_run(SDL_Surface *screen)
          * ==================================================== */
         if (screen_state == PLAYER_SCREEN_DOWNLOADING) {
 
-            /* Check for thread completion */
-            if (s_state.dl_ctx.download_done) {
-                pthread_join(s_state.dl_thread, NULL);
-                s_state.dl_thread_running = false;
-                s_state.download_pending  = false;
-
-                /* Load and play */
-                Player_stop();
-                if (Player_load(s_state.temp_path) == 0) {
-                    if (s_state.transcode) {
-                        const PlexTrack *t = plex_queue_current_track();
-                        int dur = t ? t->duration_ms : 0;
-                        if (dur > 0) Player_setTotalFrames((int64_t)((dur / 1000.0) * 48000.0));
-                    }
-                    s_state.play_start_ticks = SDL_GetTicks();
-                    Player_play();
-                    s_state.scrobbled        = false;
-                    s_state.last_timeline_ms = SDL_GetTicks();
-                    screen_state             = PLAYER_SCREEN_PLAYING;
-                    dirty                    = 1;
-                    {
-                        const PlexTrack *t = plex_queue_current_track();
-                        if (t) build_badge_str(t, s_state.transcode && !s_state.is_local_file, cfg->stream_bitrate_kbps,
-                                               Player_getTrackInfo()->sample_rate,
-                                               s_state.badge_str, sizeof(s_state.badge_str));
-                    }
-                } else {
-                    if (!s_state.is_local_file) remove(s_state.temp_path);
-                    PLEX_LOG_ERROR("[Player] Player_load failed: %s\n", s_state.temp_path);
-                    screen_state = PLAYER_SCREEN_ERROR;
-                    dirty        = 1;
-                }
+            if (handle_downloading_state(cfg, &screen_state)) {
                 goto render;
             }
-
-            if (s_state.dl_ctx.download_failed) {
-                pthread_join(s_state.dl_thread, NULL);
-                s_state.dl_thread_running = false;
-                screen_state = PLAYER_SCREEN_ERROR;
-                dirty        = 1;
-                goto render;
-            }
-
-            /* Try to start playback early once enough bytes are on disk.
-             * Opus: non-seekable open handles growing file; stream thread reopens seekably after download. */
-            if (!s_state.download_pending
-                    && (strcasecmp(s_state.ext, "mp3") == 0
-                        || strcasecmp(s_state.ext, "flac") == 0
-                        || strcasecmp(s_state.ext, "wav") == 0
-                        || strcasecmp(s_state.ext, "m4a") == 0
-                        || strcasecmp(s_state.ext, "opus") == 0)) {
-                struct stat st;
-                if (stat(s_state.temp_path, &st) == 0 && st.st_size >= PREBUFFER_BYTES) {
-                    Player_stop();
-                    Player_setFileGrowing(true);
-                    if (Player_load(s_state.temp_path) == 0) {
-                        Player_setFileGrowing(true);  /* restore file_was_growing wiped by load_streaming() */
-                        const PlexTrack *t = plex_queue_current_track();
-                        int dur = t ? t->duration_ms : 0;
-                        if (s_state.transcode && dur > 0)
-                            Player_setTotalFrames((int64_t)((dur / 1000.0) * 48000.0));
-                        if (dur > 0) Player_setDurationMs(dur);
-                        s_state.play_start_ticks = SDL_GetTicks();
-                        Player_play();
-                        s_state.download_pending    = true;
-                        s_state.scrobbled           = false;
-                        s_state.last_timeline_ms    = SDL_GetTicks();
-                        screen_state                = PLAYER_SCREEN_PLAYING;
-                        dirty                       = 1;
-                        if (t) build_badge_str(t, s_state.transcode && !s_state.is_local_file, cfg->stream_bitrate_kbps,
-                                               Player_getTrackInfo()->sample_rate,
-                                               s_state.badge_str, sizeof(s_state.badge_str));
-                        goto render;
-                    }
-                    /* Player_load failed (e.g. M4A moov at end) — fall through to full download */
-                }
-            }
-
             dirty = 1;  /* keep updating progress bar */
 
             /* Input during download */
