@@ -2562,6 +2562,13 @@ void Player_seek(int position_ms) {
     }
 
     if (player.use_streaming) {
+        /* Block all seeks while the file is still downloading. */
+        if (player.file_growing) {
+            PLEX_LOG("[Player] seek blocked: file_growing=1 format=%d\n",
+                     player.stream_decoder.format);
+            pthread_mutex_unlock(&player.mutex);
+            return;
+        }
         /* Opus before reopen is non-seekable; silently ignore seek requests
          * to avoid desyncing the display from the decoder. */
         if (player.stream_decoder.format == AUDIO_FORMAT_OPUS && !player.opus_reopened) {
