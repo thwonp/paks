@@ -32,7 +32,7 @@ jobs:
         run: git clone --depth 1 https://github.com/LoveRetro/NextUI.git opencode/NextUI
 
       - name: Create output dir
-        run: mkdir -p opencode/git/paks/PlexMusic/bin/tg5040
+        run: mkdir -p opencode/git/paks/bin/tg5040
 
       - name: Pull toolchain image
         run: docker pull ghcr.io/loveretro/tg5040-toolchain:latest
@@ -47,7 +47,7 @@ jobs:
               cd '"$WS"'/opencode/NextUI/workspace/tg5040/libmsettings
               ${CROSS_COMPILE}gcc -c -fpic msettings.c
               ${CROSS_COMPILE}gcc -shared -o libmsettings.so msettings.o -ltinyalsa -ldl -lrt
-              cp libmsettings.so '"$WS"'/opencode/git/paks/PlexMusic/bin/tg5040/
+              cp libmsettings.so '"$WS"'/opencode/git/paks/bin/tg5040/
             '
 
       - name: Build plexmusic.elf
@@ -56,28 +56,28 @@ jobs:
           docker run --rm \
             -v "$WS:$WS" \
             ghcr.io/loveretro/tg5040-toolchain:latest \
-            sh -c 'cd '"$WS"'/opencode/git/paks/PlexMusic/src && make 2>&1'
+            sh -c 'cd '"$WS"'/opencode/git/paks/src && make 2>&1'
 
       - name: Package zip
         run: |
           mkdir -p staging/PlexMusic.pak
           mkdir -p staging/PlexMusic.pak/bin/tg5040
-          cp opencode/git/paks/PlexMusic/launch.sh staging/PlexMusic.pak/
-          cp opencode/git/paks/PlexMusic/pak.json staging/PlexMusic.pak/
-          cp -r opencode/git/paks/PlexMusic/res/ staging/PlexMusic.pak/res/
-          cp opencode/git/paks/PlexMusic/bin/tg5040/plexmusic.elf staging/PlexMusic.pak/bin/tg5040/
-          cp opencode/git/paks/PlexMusic/bin/tg5040/libmsettings.so staging/PlexMusic.pak/bin/tg5040/
+          cp opencode/git/paks/launch.sh staging/PlexMusic.pak/
+          cp opencode/git/paks/pak.json staging/PlexMusic.pak/
+          cp -r opencode/git/paks/res/ staging/PlexMusic.pak/res/
+          cp opencode/git/paks/bin/tg5040/plexmusic.elf staging/PlexMusic.pak/bin/tg5040/
+          cp opencode/git/paks/bin/tg5040/libmsettings.so staging/PlexMusic.pak/bin/tg5040/
           jq --arg v "$VERSION" '.version = $v' staging/PlexMusic.pak/pak.json > tmp.json && mv tmp.json staging/PlexMusic.pak/pak.json
           cd staging && zip -r "../PlexMusic.pak.zip" PlexMusic.pak/
 
       - name: Bump pak.json version in repo
         run: |
-          jq --arg v "$VERSION" '.version = $v' opencode/git/paks/PlexMusic/pak.json > tmp.json \
-            && mv tmp.json opencode/git/paks/PlexMusic/pak.json
+          jq --arg v "$VERSION" '.version = $v' opencode/git/paks/pak.json > tmp.json \
+            && mv tmp.json opencode/git/paks/pak.json
           cd opencode/git/paks
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add PlexMusic/pak.json
+          git add pak.json
           git commit -m "Bump PlexMusic version to $VERSION"
           git push
 
