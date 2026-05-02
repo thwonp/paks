@@ -105,8 +105,15 @@ int plex_config_load(PlexConfig *cfg)
     if (library_name)
         strncpy(cfg->library_name, library_name, sizeof(cfg->library_name) - 1);
 
-    cfg->stream_bitrate_kbps   = (int)json_object_get_number(obj, "stream_bitrate_kbps");
-    cfg->download_bitrate_kbps = (int)json_object_get_number(obj, "download_bitrate_kbps");
+    if (json_object_has_value(obj, "stream_bitrate_kbps"))
+        cfg->stream_bitrate_kbps = (int)json_object_get_number(obj, "stream_bitrate_kbps");
+    else
+        cfg->stream_bitrate_kbps = 128;
+
+    if (json_object_has_value(obj, "download_bitrate_kbps"))
+        cfg->download_bitrate_kbps = (int)json_object_get_number(obj, "download_bitrate_kbps");
+    else
+        cfg->download_bitrate_kbps = 128;
 
     /* Default true: pocket lock on unless explicitly saved as false */
     if (json_object_has_value(obj, "pocket_lock_enabled"))
@@ -119,7 +126,7 @@ int plex_config_load(PlexConfig *cfg)
         if (cfg->preload_count < 0)  cfg->preload_count = 0;
         if (cfg->preload_count > 10) cfg->preload_count = 10;
     } else {
-        cfg->preload_count = 1;
+        cfg->preload_count = 2;
     }
 
     json_value_free(root);

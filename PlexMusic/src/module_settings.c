@@ -25,15 +25,15 @@ typedef enum {
     SETTINGS_STATE_SIGNOUT_CONFIRM /* Sign-out confirmation dialog */
 } SettingsState;
 
-/* Menu item indices (items 0 and 1 are header lines — non-selectable) */
+/* Menu item indices */
 #define SETTINGS_ITEM_SWITCH_SERVER    0
-#define SETTINGS_ITEM_SIGN_OUT         1
+#define SETTINGS_ITEM_LIBRARY          1
 #define SETTINGS_ITEM_SCREEN_TIMEOUT   2
-#define SETTINGS_ITEM_LIBRARY          3
-#define SETTINGS_ITEM_STREAM_BITRATE   4
-#define SETTINGS_ITEM_DOWNLOAD_BITRATE 5
-#define SETTINGS_ITEM_POCKET_LOCK      6
-#define SETTINGS_ITEM_PRELOAD_COUNT    7
+#define SETTINGS_ITEM_STREAM_BITRATE   3
+#define SETTINGS_ITEM_DOWNLOAD_BITRATE 4
+#define SETTINGS_ITEM_POCKET_LOCK      5
+#define SETTINGS_ITEM_PRELOAD_COUNT    6
+#define SETTINGS_ITEM_SIGN_OUT         7
 #define SETTINGS_ITEM_COUNT            8
 
 /* Milliseconds to show "Server updated." confirmation */
@@ -102,17 +102,13 @@ static const char *preload_count_label(int count)
  * ========================================================================= */
 
 /*
- * Render the main settings menu:
- *   - Server info header (non-selectable)
- *   - "Switch Server" item
- *   - "Sign Out" item
+ * Render the main settings menu.
  */
 static void render_settings_menu(SDL_Surface *screen, int show_setting,
                                   int menu_selected, int scroll,
                                   int menu_items_visible)
 {
     const PlexConfig *cfg = plex_config_get_mutable();
-    int hw = screen->w;
 
     SDL_FillRect(screen, NULL, SDL_MapRGB(screen->format, 0x12, 0x12, 0x12));
 
@@ -120,50 +116,22 @@ static void render_settings_menu(SDL_Surface *screen, int show_setting,
 
     ListLayout layout = calc_list_layout(screen);
 
-    /* --- Server info header block --- */
-    /* "Server: <name>" in medium white */
+    /* --- Selectable menu items --- */
     char server_label[PLEX_MAX_STR + 12];
-    if (cfg->server_name[0]) {
+    if (cfg->server_name[0])
         snprintf(server_label, sizeof(server_label), "Server: %s", cfg->server_name);
-    } else {
+    else
         snprintf(server_label, sizeof(server_label), "Server: (unknown)");
-    }
-
-    SDL_Surface *name_surf = TTF_RenderUTF8_Blended(Fonts_getMedium(),
-                                                     server_label, COLOR_WHITE);
-    if (name_surf) {
-        int tx = (hw - name_surf->w) / 2;
-        if (tx < SCALE1(BUTTON_PADDING)) tx = SCALE1(BUTTON_PADDING);
-        SDL_BlitSurface(name_surf, NULL, screen,
-                        &(SDL_Rect){tx, layout.list_y});
-        SDL_FreeSurface(name_surf);
-    }
-
-    /* Server URL in small grey on the next line */
-    if (cfg->server_url[0]) {
-        SDL_Surface *url_surf = TTF_RenderUTF8_Blended(Fonts_getSmall(),
-                                                        cfg->server_url,
-                                                        COLOR_LIGHT_TEXT);
-        if (url_surf) {
-            int tx = (hw - url_surf->w) / 2;
-            if (tx < SCALE1(BUTTON_PADDING)) tx = SCALE1(BUTTON_PADDING);
-            SDL_BlitSurface(url_surf, NULL, screen,
-                            &(SDL_Rect){tx, layout.list_y + layout.item_h});
-            SDL_FreeSurface(url_surf);
-        }
-    }
-
-    /* --- Selectable menu items (offset below the 2-line header) --- */
-    /* Each item uses render_menu_item_pill; index offset by 2 rows to clear header */
-    char timeout_label[64];
-    snprintf(timeout_label, sizeof(timeout_label), "Screen timeout: %s",
-             screen_timeout_label(cfg->screen_timeout));
 
     char library_label[PLEX_MAX_STR + 12];
     if (cfg->library_name[0])
         snprintf(library_label, sizeof(library_label), "Library: %s", cfg->library_name);
     else
         snprintf(library_label, sizeof(library_label), "Library: (not set)");
+
+    char timeout_label[64];
+    snprintf(timeout_label, sizeof(timeout_label), "Screen timeout: %s",
+             screen_timeout_label(cfg->screen_timeout));
 
     char stream_bitrate_label[32];
     snprintf(stream_bitrate_label, sizeof(stream_bitrate_label),
@@ -183,29 +151,25 @@ static void render_settings_menu(SDL_Surface *screen, int show_setting,
              "Track Preload: %s", preload_count_label(cfg->preload_count));
 
     const char *labels[SETTINGS_ITEM_COUNT] = {
-        "Switch Server",
-        "Sign Out",
-        timeout_label,
+        server_label,
         library_label,
+        timeout_label,
         stream_bitrate_label,
         download_bitrate_label,
         pocket_lock_label,
         preload_count_lbl,
+        "Sign Out",
     };
-
-    /* Adjust list_y for menu items so they appear below the header block */
-    ListLayout menu_layout = layout;
-    menu_layout.list_y = layout.list_y + layout.item_h * 2 + SCALE1(8);
 
     for (int i = scroll; i < SETTINGS_ITEM_COUNT && i < scroll + menu_items_visible; i++) {
         bool sel = (i == menu_selected);
         char truncated[256];
-        MenuItemPos pos = render_menu_item_pill(screen, &menu_layout,
+        MenuItemPos pos = render_menu_item_pill(screen, &layout,
                                                 labels[i], truncated,
                                                 i - scroll,   /* visual row index */
                                                 sel, 0);
         render_list_item_text(screen, NULL, truncated, Fonts_getMedium(),
-                              pos.text_x, pos.text_y, menu_layout.max_width, sel);
+                              pos.text_x, pos.text_y, layout.max_width, sel);
     }
 
     render_scroll_indicators(screen, scroll, menu_items_visible, SETTINGS_ITEM_COUNT);
@@ -340,7 +304,7 @@ AppModule module_settings_run(SDL_Surface *screen)
     /* Compute once — screen size is fixed for the session */
     {
         ListLayout il = calc_list_layout(screen);
-        int v = (il.list_h - il.item_h * 2 - SCALE1(8)) / il.item_h;
+        int v = il.list_h / il.item_h;
         menu_items_visible = (v < 1) ? 1 : v;
     }
 

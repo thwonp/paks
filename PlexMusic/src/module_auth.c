@@ -296,6 +296,9 @@ AppModule module_auth_run(SDL_Surface *screen)
                     strncpy(cfg->server_id, servers[0].id, PLEX_MAX_STR - 1);
                     cfg->server_id[PLEX_MAX_STR - 1] = '\0';
                     PLEX_LOG("[Auth] Saving config...\n");
+                    if (cfg->stream_bitrate_kbps == 0)   cfg->stream_bitrate_kbps   = 128;
+                    if (cfg->download_bitrate_kbps == 0) cfg->download_bitrate_kbps = 128;
+                    if (cfg->preload_count == 0)         cfg->preload_count          = 2;
                     plex_config_save(cfg);
                     PLEX_LOG("[Auth] Returning MODULE_BROWSE\n");
                     return MODULE_BROWSE;
@@ -323,6 +326,9 @@ AppModule module_auth_run(SDL_Surface *screen)
                 cfg->server_name[PLEX_MAX_STR - 1] = '\0';
                 strncpy(cfg->server_id, servers[server_selected].id, PLEX_MAX_STR - 1);
                 cfg->server_id[PLEX_MAX_STR - 1] = '\0';
+                if (cfg->stream_bitrate_kbps == 0)   cfg->stream_bitrate_kbps   = 128;
+                if (cfg->download_bitrate_kbps == 0) cfg->download_bitrate_kbps = 128;
+                if (cfg->preload_count == 0)         cfg->preload_count          = 2;
                 plex_config_save(cfg);
                 return MODULE_BROWSE;
             } else if (PAD_justPressed(BTN_B)) {
