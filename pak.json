@@ -1,5 +1,5 @@
 {
-  "type": "tool",
+  "type": "TOOL",
   "name": "Plex Music",
   "version": "v1.0.0",
   "description": "Plex music client for NextUI",
