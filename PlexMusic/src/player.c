@@ -1319,6 +1319,8 @@ static void* stream_thread_func(void* arg) {
                     if (real_total > 0 && save_frame >= real_total)
                         save_frame = real_total - 1;
                     int seek_rc = op_pcm_seek(of, save_frame);
+                    PLEX_LOG("[Player] proactive reopen: save_frame=%lld seek_result=%d\n",
+                             (long long)save_frame, seek_rc);
                     if (seek_rc != 0) {
                         player.stream_eof = true;
                         player.opus_reopened = true;
@@ -2521,7 +2523,12 @@ void Player_setFileGrowing(bool growing) {
                 && !player.opus_reopened) {
             player.opus_reopen_requested = true;
         }
+        PLEX_LOG("[Player] setFileGrowing(false): reopen_requested=%d (was_growing=%d fmt=%d reopened=%d)\n",
+                 player.opus_reopen_requested, player.file_was_growing,
+                 player.stream_decoder.format, player.opus_reopened);
     }
+    PLEX_LOG("[Player] setFileGrowing(%d): file_was_growing=%d opus_reopened=%d\n",
+             growing, player.file_was_growing, player.opus_reopened);
 }
 
 void Player_setTotalFrames(int64_t frames)
@@ -2558,6 +2565,8 @@ void Player_seek(int position_ms) {
         /* Opus before reopen is non-seekable; silently ignore seek requests
          * to avoid desyncing the display from the decoder. */
         if (player.stream_decoder.format == AUDIO_FORMAT_OPUS && !player.opus_reopened) {
+            PLEX_LOG("[Player] seek blocked: opus_reopened=%d file_growing=%d\n",
+                     player.opus_reopened, player.file_growing);
             pthread_mutex_unlock(&player.mutex);
             return;
         }

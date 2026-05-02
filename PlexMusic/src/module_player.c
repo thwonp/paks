@@ -1079,10 +1079,11 @@ AppModule module_player_run(SDL_Surface *screen)
                 struct stat st;
                 if (stat(s_state.temp_path, &st) == 0 && st.st_size >= PREBUFFER_BYTES) {
                     Player_stop();
+                    Player_setFileGrowing(true);
                     if (Player_load(s_state.temp_path) == 0) {
+                        Player_setFileGrowing(true);  /* restore file_was_growing wiped by load_streaming() */
                         const PlexTrack *t = plex_queue_current_track();
                         int dur = t ? t->duration_ms : 0;
-                        Player_setFileGrowing(true);
                         if (s_state.transcode && dur > 0)
                             Player_setTotalFrames((int64_t)((dur / 1000.0) * 48000.0));
                         if (dur > 0) Player_setDurationMs(dur);
@@ -1676,10 +1677,11 @@ void PlayerModule_backgroundTick(void)
             struct stat st;
             if (stat(s_state.temp_path, &st) == 0 && st.st_size >= PREBUFFER_BYTES) {
                 Player_stop();
+                Player_setFileGrowing(true);
                 if (Player_load(s_state.temp_path) == 0) {
+                    Player_setFileGrowing(true);  /* restore file_was_growing wiped by load_streaming() */
                     const PlexTrack *t = plex_queue_current_track();
                     int dur = t ? t->duration_ms : 0;
-                    Player_setFileGrowing(true);
                     if (s_state.transcode && dur > 0)
                         Player_setTotalFrames((int64_t)((dur / 1000.0) * 48000.0));
                     if (dur > 0) Player_setDurationMs(dur);
