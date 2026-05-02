@@ -8,6 +8,7 @@
 
 #include "include/parson/parson.h"
 #include "api.h"
+#include "plex_config.h"
 #include "plex_log.h"
 
 #define PLEX_TV_API "https://plex.tv/api/v2"
@@ -291,6 +292,94 @@ int plex_auth_get_servers(const char *token, PlexServer servers[], int *count)
     }
 
     json_value_free(root);
+    return 0;
+}
+
+/* ------------------------------------------------------------------
+ * plex_auth_refresh_server_urls
+ * GET https://plex.tv/api/v2/resources?includeHttps=1&includeRelay=1
+ * Finds the resource matching cfg->server_id, then updates
+ * cfg->server_url and cfg->relay_url with fresh connection URIs.
+ * Returns 0 on success, -1 on failure (cfg unchanged).
+ * ------------------------------------------------------------------ */
+int plex_auth_refresh_server_urls(PlexConfig *cfg)
+{
+    if (!cfg || cfg->token[0] == '\0' || cfg->server_id[0] == '\0')
+        return -1;
+
+    uint8_t *buf = (uint8_t *)malloc(RESP_BUF_SIZE);
+    if (!buf) return -1;
+
+    PlexNetOptions opts = {
+        .method      = PLEX_HTTP_GET,
+        .body        = NULL,
+        .token       = cfg->token,
+        .timeout_sec = 5,
+        .no_persist  = true
+    };
+
+    int n = plex_net_fetch(PLEX_TV_API "/resources?includeHttps=1&includeRelay=1",
+                           buf, RESP_BUF_SIZE, &opts);
+    if (n <= 0) {
+        PLEX_LOG("[Auth] server URL refresh failed (using cached)\n");
+        free(buf);
+        return -1;
+    }
+    buf[n] = '\0';
+
+    JSON_Value *root = json_parse_string((const char *)buf);
+    free(buf);
+    if (!root) {
+        PLEX_LOG("[Auth] server URL refresh failed (using cached)\n");
+        return -1;
+    }
+
+    JSON_Array *arr = json_value_get_array(root);
+    if (!arr) {
+        json_value_free(root);
+        PLEX_LOG("[Auth] server URL refresh failed (using cached)\n");
+        return -1;
+    }
+
+    size_t total = json_array_get_count(arr);
+    int found = 0;
+    for (size_t i = 0; i < total; i++) {
+        JSON_Object *res = json_array_get_object(arr, i);
+        if (!res) continue;
+
+        const char *mid = json_object_get_string(res, "machineIdentifier");
+        if (!mid || strcmp(mid, cfg->server_id) != 0) continue;
+
+        JSON_Array *conns = json_object_get_array(res, "connections");
+        const char *new_server = best_conn_uri(conns);
+        const char *new_relay  = best_nonlocal_uri(conns);
+
+        if (new_server) {
+            strncpy(cfg->server_url, new_server, sizeof(cfg->server_url) - 1);
+            cfg->server_url[sizeof(cfg->server_url) - 1] = '\0';
+        }
+        if (new_relay) {
+            strncpy(cfg->relay_url, new_relay, sizeof(cfg->relay_url) - 1);
+            cfg->relay_url[sizeof(cfg->relay_url) - 1] = '\0';
+        }
+
+        if (new_server || new_relay) {
+            plex_config_save(cfg);
+            PLEX_LOG("[Auth] server URLs refreshed: server_url=%s relay_url=%s\n",
+                     cfg->server_url, cfg->relay_url);
+        }
+
+        found = 1;
+        break;
+    }
+
+    json_value_free(root);
+
+    if (!found) {
+        PLEX_LOG("[Auth] server URL refresh failed (using cached)\n");
+        return -1;
+    }
+
     return 0;
 }
 

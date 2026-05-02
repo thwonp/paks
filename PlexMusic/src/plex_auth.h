@@ -33,4 +33,13 @@ int plex_auth_check_pin(PlexPin *pin);
 #define PLEX_MAX_SERVERS 16
 int plex_auth_get_servers(const char *token, PlexServer servers[], int *count);
 
+/*
+ * Refresh cfg->server_url and cfg->relay_url from Plex TV on startup.
+ * Calls GET https://plex.tv/api/v2/resources?includeHttps=1&includeRelay=1
+ * and finds the resource matching cfg->server_id.
+ * Returns 0 on success, -1 if skipped (no token/server_id) or fetch failed.
+ * On failure, cfg is unchanged (cached values remain intact).
+ */
+int plex_auth_refresh_server_urls(PlexConfig *cfg);
+
 #endif /* PLEX_AUTH_H */

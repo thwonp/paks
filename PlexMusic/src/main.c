@@ -11,6 +11,7 @@
 #include "config.h"
 
 #include "plex_log.h"
+#include "plex_auth.h"
 #include "plex_config.h"
 #include "plex_net.h"
 #include "plex_art.h"
@@ -53,11 +54,14 @@ static void apply_relay_fallback(PlexConfig *cfg)
     snprintf(identity_url, sizeof(identity_url), "%s/identity", cfg->server_url);
 
     uint8_t probe_buf[4096];
+    /* timeout_sec=1: fail fast if primary URL is unreachable.
+     * PlexNetOptions has no max_retries field; plex_net.c handles retries
+     * internally but the short timeout limits total wait time. */
     PlexNetOptions probe_opts = {
         .method      = PLEX_HTTP_GET,
         .body        = NULL,
         .token       = cfg->token,
-        .timeout_sec = 3
+        .timeout_sec = 1
     };
     int r = plex_net_fetch(identity_url, probe_buf, (int)sizeof(probe_buf), &probe_opts);
     if (r > 0) {
@@ -121,6 +125,8 @@ int main(int argc, char *argv[]) {
     if (!g_config.offline_mode) {
         SDL_FillRect(screen, NULL, SDL_MapRGB(screen->format, 0x12, 0x12, 0x12));
         GFX_flip(screen);
+        if (plex_config_is_valid(&g_config))
+            plex_auth_refresh_server_urls(&g_config); /* best-effort; failure falls through to cached */
         apply_relay_fallback(&g_config);
     }
 
