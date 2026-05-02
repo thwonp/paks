@@ -6,15 +6,52 @@ PlexMusic.pak is a music player for the TrimUI Brick that streams music from a P
 
 ## Features
 
+**Browsing**
+- Browse by Artists → Albums → Tracks or jump straight to a flat Albums view sorted by release year
+- Album art displayed alongside every list
+- Animated loading screen with instant B-button cancel on any in-progress load
+
+**Playback**
+- Streams MP3, FLAC, WAV, M4A, AAC, OGG, and Opus
+- Set transcode quality for Opus conversions
+- Progressive playback — audio starts within ~2–3 s; no waiting for the full track to download
+  - Note: Only when Original quality is set — WIP on getting this working for transcodes
+- Scrobbles plays back to your Plex server
+
+**Offline**
+- Download albums from the browse screen (Y button on any album)
+- Set download quality targets (original or Opus transcode)
+- Full offline mode: browse and play downloaded albums without a network connection
+- Offline Artists and Albums views mirror the online experience
+- Warning prompt if you try to switch to offline while a download is in progress
+
+**Favorites**
+- Press Y on any track (online or offline) to toggle it as a favorite — a ♥ appears in the track listing
+- "Favorite Tracks" on the home menu shows all favorites; A queues the whole list, Y removes a track
+- Press Y on "Favorite Tracks" in online mode to sync: missing tracks are downloaded, removed favorites are deleted from local storage
+- Offline edits (add/remove favorites) are automatically picked up by the next online sync — no extra step needed
+
+**Auth & setup**
 - PIN-based Plex authentication (plex.tv/link, no password entry needed)
-- Browse Music libraries → Artists → Albums → Tracks
-- Streams MP3, FLAC, WAV, M4A; progressive playback (audio starts within ~2–3 s)
-- Background playback — press B to return to browsing while music keeps playing
+- Supports multiple Plex servers — pick one on first launch
+- Auth and settings saved to SD card; no re-login needed after reboot
+
+**Quality of life**
+- Background playback — press B from Now Playing to return to browse while audio keeps playing
 - Now Playing screen: shuffle (L2), repeat All/One/Off (R2), favorite (Y)
-- Favorite Tracks list (online and offline)
-- Offline mode: download albums to SD card, play without network
-- Offline favorites sync: downloads favorite tracks for offline use
-- Settings: stream quality (Original or Opus transcode at selectable bitrate)
+- D-pad left/right: tap = skip track, hold = seek ±5 s
+- Queue auto-advances through an album during background playback
+- Configurable screen sleep timeout
+- MENU+SELECT wakes the screen from sleep
+- MENU+START quits from anywhere instantly
+- Settings: switch server, sign out, change library, seek interval, transcode options
+
+## Planned Features
+
+- Bug hunting + more testing
+- Playlists
+- Custom sort options
+- Other QoL stuff and features as I think of them (or as requested)
 
 ## Installation
 
@@ -109,3 +146,7 @@ podman run --rm \
 ```
 
 Output: `bin/tg5040/plexmusic.elf`
+
+## Disclaimer
+
+This code was written with good vibes only (i.e Claude). I'm not a fullstack dev, just a person who wanted to listen to Plex on his TrimUI Brick.
