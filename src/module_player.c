@@ -1115,6 +1115,7 @@ AppModule module_player_run(SDL_Surface *screen)
     while (1) {
         GFX_startFrame();
         PAD_poll();
+        SDL_Delay(16);
 
         /* ---- Screen sleep / wake ---- */
         if (cfg->screen_timeout > 0 && !s_screen_sleeping) {
@@ -1165,6 +1166,7 @@ AppModule module_player_run(SDL_Surface *screen)
                 handle_downloading_state(cfg, &screen_state);
             }
 
+            SDL_Delay(34); /* combined with top-of-loop SDL_Delay(16) = ~50 ms (~15 Hz) */
             GFX_sync();
             continue;  /* consume all other input while sleeping */
         }

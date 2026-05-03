@@ -97,6 +97,7 @@ int main(int argc, char *argv[]) {
     InitSettings();
     PAD_init();
     PWR_init();
+    PWR_setCPUSpeed(CPU_SPEED_POWERSAVE);
     PWR_disableAutosleep();
     WIFI_init();
     Fonts_load();

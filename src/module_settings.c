@@ -317,6 +317,7 @@ AppModule module_settings_run(SDL_Surface *screen)
     while (1) {
         GFX_startFrame();
         PAD_poll();
+        SDL_Delay(16);
 
         /* Power management heartbeat — must run every frame before any early-return */
         ModuleCommon_PWR_update(&dirty, &show_setting);
