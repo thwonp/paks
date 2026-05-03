@@ -632,7 +632,8 @@ static void render_icon_row(SDL_Surface *screen, const PlexQueue *queue,
 }
 
 static void render_playing_screen(SDL_Surface *screen,
-                                   const PlexTrack *track)
+                                   const PlexTrack *track,
+                                   int show_setting)
 {
     SDL_FillRect(screen, NULL, SDL_MapRGB(screen->format, 0x12, 0x12, 0x12));
 
@@ -716,11 +717,14 @@ static void render_playing_screen(SDL_Surface *screen,
         SDL_Color badge_gray = { 180, 180, 180, 255 };
         SDL_Surface *badge = TTF_RenderUTF8_Blended(Fonts_getSmall(), s_state.badge_str, badge_gray);
         if (badge) {
-            SDL_Rect dst = { screen->w - PADDING - badge->w, PADDING, badge->w, badge->h };
+            SDL_Rect dst = { PADDING, PADDING, badge->w, badge->h };
             SDL_BlitSurface(badge, NULL, screen, &dst);
             SDL_FreeSurface(badge);
         }
     }
+
+    /* Hardware status (wifi / battery / time) — top-right */
+    GFX_blitHardwareGroup(screen, show_setting);
 
     GFX_flip(screen);
 }
@@ -1523,7 +1527,7 @@ render:
                 if (render_t) render_downloading(screen, render_t,
                                                  (int)s_state.dl_ctx.progress_pct);
             } else if (screen_state == PLAYER_SCREEN_PLAYING) {
-                if (render_t) render_playing_screen(screen, render_t);
+                if (render_t) render_playing_screen(screen, render_t, show_setting);
             } else {
                 render_error(screen);
             }
