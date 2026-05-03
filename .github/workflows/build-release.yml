@@ -27,6 +27,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: opencode/git/paks
+          fetch-depth: 0
 
       - name: Clone NextUI
         run: git clone --depth 1 https://github.com/LoveRetro/NextUI.git opencode/NextUI
@@ -88,7 +89,17 @@ jobs:
         run: |
           PRERELEASE_FLAG=""
           [ "${{ github.event.inputs.prerelease }}" = "true" ] && PRERELEASE_FLAG="--prerelease"
+
+          # Collect commits since previous tag (fall back to full log on first release)
+          PREV_TAG=$(git -C opencode/git/paks describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            git -C opencode/git/paks log "${PREV_TAG}..HEAD" --pretty=format:"- %s" --no-merges > release_notes.txt
+          else
+            git -C opencode/git/paks log --pretty=format:"- %s" --no-merges > release_notes.txt
+          fi
+
           gh release create "$VERSION" \
             --title "PlexMusic $VERSION" \
             $PRERELEASE_FLAG \
+            --notes-file release_notes.txt \
             "PlexMusic.pak.zip"
