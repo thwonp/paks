@@ -69,7 +69,7 @@ jobs:
           cp opencode/git/paks/bin/tg5040/plexmusic.elf staging/PlexMusic.pak/bin/tg5040/
           cp opencode/git/paks/bin/tg5040/libmsettings.so staging/PlexMusic.pak/bin/tg5040/
           jq --arg v "$VERSION" '.version = $v' staging/PlexMusic.pak/pak.json > tmp.json && mv tmp.json staging/PlexMusic.pak/pak.json
-          cd staging && zip -r "../PlexMusic.pak.zip" PlexMusic.pak/
+          cd staging/PlexMusic.pak && zip -r "../../PlexMusic.pak.zip" .
 
       - name: Bump pak.json version in repo
         run: |
