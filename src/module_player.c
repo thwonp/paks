@@ -55,8 +55,11 @@ typedef enum {
  * Sleep state
  * ------------------------------------------------------------------ */
 
-static bool   s_screen_sleeping   = false;
-static Uint32 s_last_activity_ms  = 0;
+static bool          s_screen_sleeping   = false;
+static Uint32        s_last_activity_ms  = 0;
+static volatile bool s_pwr_just_woke     = false;
+
+static void player_after_sleep_cb(void) { s_pwr_just_woke = true; }
 
 /* ------------------------------------------------------------------
  * Scrobble fire-and-forget infrastructure
@@ -1137,15 +1140,20 @@ AppModule module_player_run(SDL_Surface *screen)
         }
 
         if (s_screen_sleeping) {
+            ModuleCommon_setAfterSleepCallback(player_after_sleep_cb);
             GlobalInputResult global = ModuleCommon_handleGlobalInput(screen, &show_setting, 0);
             if (global.should_quit) {
                 PLAT_enableBacklight(1);
                 s_screen_sleeping = false;
                 return MODULE_QUIT;
             }
-            bool woke = cfg->pocket_lock_enabled
-                ? (PAD_isPressed(BTN_MENU) && PAD_justPressed(BTN_SELECT))
-                : (PAD_anyPressed() && !PAD_isPressed(BTN_PLUS) && !PAD_isPressed(BTN_MINUS));
+            bool os_woke = s_pwr_just_woke;
+            s_pwr_just_woke = false;
+
+            bool woke = os_woke
+                || (cfg->pocket_lock_enabled
+                    ? (PAD_isPressed(BTN_MENU) && PAD_justPressed(BTN_SELECT))
+                    : (PAD_anyPressed() && !PAD_isPressed(BTN_PLUS) && !PAD_isPressed(BTN_MINUS)));
             if (woke) {
                 PLAT_enableBacklight(1);
                 s_screen_sleeping  = false;

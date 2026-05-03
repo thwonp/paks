@@ -39,6 +39,9 @@ static uint32_t overlay_release_time = 0;
 #define OVERLAY_VISIBLE_AFTER_RELEASE_MS 800  // How long overlay stays visible after release
 #define OVERLAY_FORCE_HIDE_DURATION_MS 500    // How long to keep forcing hide
 
+// One-shot after-sleep callback (cleared immediately after being passed to PWR_update)
+static void (*s_after_sleep_cb)(void) = NULL;
+
 void ModuleCommon_tickToast(char* message, uint32_t toast_time, int* dirty) {
     if (message[0] == '\0') return;
     if (SDL_GetTicks() - toast_time < TOAST_DURATION) {
@@ -188,7 +191,8 @@ GlobalInputResult ModuleCommon_handleGlobalInput(SDL_Surface* screen, int* show_
     {
         int dirty_before = result.dirty ? 1 : 0;
         int dirty_tmp = dirty_before;
-        PWR_update(&dirty_tmp, show_setting, NULL, NULL);
+        PWR_update(&dirty_tmp, show_setting, NULL, s_after_sleep_cb);
+        s_after_sleep_cb = NULL;
 
         if (dirty_tmp && !dirty_before) {
             result.dirty = true;
@@ -278,8 +282,9 @@ void ModuleCommon_PWR_update(int* dirty, int* show_setting) {
         overlay_release_time = SDL_GetTicks();
     }
 
-    // Call platform PWR_update
-    PWR_update(dirty, show_setting, NULL, NULL);
+    // Call platform PWR_update, passing and consuming the one-shot after-sleep callback
+    PWR_update(dirty, show_setting, NULL, s_after_sleep_cb);
+    s_after_sleep_cb = NULL;
 
     // After visible period, force hide overlay
     if (overlay_release_time > 0) {
@@ -313,6 +318,10 @@ bool ModuleCommon_handleHIDVolume(USBHIDEvent hid_event) {
     float v = vol / 20.0f;
     Player_setVolume(v * v * v);
     return true;
+}
+
+void ModuleCommon_setAfterSleepCallback(void (*cb)(void)) {
+    s_after_sleep_cb = cb;
 }
 
 void ModuleCommon_handleHardwareVolume(void) {

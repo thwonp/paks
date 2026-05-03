@@ -70,6 +70,11 @@ void ModuleCommon_quit(void);
 // Call this instead of PWR_update directly in modules
 void ModuleCommon_PWR_update(int* dirty, int* show_setting);
 
+// Register a one-shot callback to be invoked immediately after the device wakes
+// from a PWR_sleep() inside PWR_update.  The callback is consumed (cleared) on
+// the same frame it is passed to PWR_update, so it fires at most once per call.
+void ModuleCommon_setAfterSleepCallback(void (*cb)(void));
+
 // Handle a single HID volume event. Returns true if the event was a volume event.
 bool ModuleCommon_handleHIDVolume(USBHIDEvent hid_event);
 
