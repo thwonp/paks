@@ -152,6 +152,12 @@ static PlexSSLCtx *s_persist_ctx       = NULL;
 static char        s_persist_host[512] = "";
 static int         s_persist_port      = 0;
 
+/* Art-thread dedicated persistent connection (accessed only from art fetch
+ * thread during fetches, or from main thread after pthread_join in cleanup) */
+static PlexSSLCtx *s_art_persist_ctx       = NULL;
+static char        s_art_persist_host[512] = "";
+static int         s_art_persist_port      = 0;
+
 /* ------------------------------------------------------------------
  * Safe URL logging helper
  * ------------------------------------------------------------------ */
@@ -321,6 +327,16 @@ void plex_net_connection_close(void)
     s_persist_port = 0;
 }
 
+void plex_net_art_connection_close(void)
+{
+    if (s_art_persist_ctx) {
+        ssl_ctx_free(s_art_persist_ctx);
+        s_art_persist_ctx = NULL;
+    }
+    s_art_persist_host[0] = '\0';
+    s_art_persist_port = 0;
+}
+
 /* ------------------------------------------------------------------
  * Internal SSL/plain read/write helpers
  * ------------------------------------------------------------------ */
@@ -474,7 +490,9 @@ static int plex_net_fetch_internal(const char *url,
     const char *body   = opts ? opts->body   : NULL;
     bool is_post = (opts && opts->method == PLEX_HTTP_POST);
     const char *method_str = is_post ? "POST" : "GET";
-    bool no_persist = (opts && opts->no_persist);
+    bool use_art_persist = (opts && opts->use_art_persist);
+    /* use_art_persist implies persistent (art-thread pool); ignore no_persist */
+    bool no_persist = use_art_persist ? false : (opts && opts->no_persist);
 
     char *host = (char *)malloc(256);
     char *path = (char *)malloc(1024);
@@ -505,11 +523,28 @@ static int plex_net_fetch_internal(const char *url,
     bool stale_reconnected = false;
 
     if (is_https) {
-        if (!no_persist &&
-            s_persist_ctx &&
-            strcmp(s_persist_host, host) == 0 &&
-            s_persist_port == port) {
-            /* Attempt to reuse existing connection */
+        if (use_art_persist &&
+            s_art_persist_ctx &&
+            strcmp(s_art_persist_host, host) == 0 &&
+            s_art_persist_port == port) {
+            /* Reuse art-thread dedicated connection */
+            ssl_ctx      = s_art_persist_ctx;
+            sock_fd      = ssl_ctx->net.fd;
+            used_persist = true;
+        } else if (use_art_persist) {
+            /* Art persist — different host or no existing connection: open a new one */
+            plex_net_art_connection_close();
+            ssl_ctx = ssl_ctx_connect(host, port, timeout_sec);
+            if (!ssl_ctx) {
+                PLEX_LOG_ERROR("[PlexNet] SSL connect failed (art): %s:%d\n", host, port);
+                free(req); free(host); free(path); return -1;
+            }
+            sock_fd = ssl_ctx->net.fd;
+        } else if (!no_persist &&
+                   s_persist_ctx &&
+                   strcmp(s_persist_host, host) == 0 &&
+                   s_persist_port == port) {
+            /* Attempt to reuse existing main connection */
             ssl_ctx      = s_persist_ctx;
             sock_fd      = ssl_ctx->net.fd;
             used_persist = true;
@@ -544,9 +579,15 @@ static int plex_net_fetch_internal(const char *url,
             PLEX_LOG("[PlexNet] Stale connection detected, reconnecting: %s:%d\n", host, port);
             ssl_ctx->initialized = false;   /* dead socket — skip close_notify */
             ssl_ctx_free(ssl_ctx);
-            s_persist_ctx = NULL;
-            s_persist_host[0] = '\0';
-            s_persist_port = 0;
+            if (use_art_persist) {
+                s_art_persist_ctx = NULL;
+                s_art_persist_host[0] = '\0';
+                s_art_persist_port = 0;
+            } else {
+                s_persist_ctx = NULL;
+                s_persist_host[0] = '\0';
+                s_persist_port = 0;
+            }
             used_persist = false;
             ssl_ctx = ssl_ctx_connect(host, port, timeout_sec);
             if (!ssl_ctx) {
@@ -592,9 +633,15 @@ static int plex_net_fetch_internal(const char *url,
             free(hdr); hdr = NULL;
             ssl_ctx->initialized = false;   /* dead socket — skip close_notify */
             ssl_ctx_free(ssl_ctx);
-            s_persist_ctx     = NULL;
-            s_persist_host[0] = '\0';
-            s_persist_port    = 0;
+            if (use_art_persist) {
+                s_art_persist_ctx     = NULL;
+                s_art_persist_host[0] = '\0';
+                s_art_persist_port    = 0;
+            } else {
+                s_persist_ctx     = NULL;
+                s_persist_host[0] = '\0';
+                s_persist_port    = 0;
+            }
             used_persist = false;
             stale_reconnected = true;
 
@@ -670,7 +717,11 @@ static int plex_net_fetch_internal(const char *url,
             free(req);
             if (ssl_ctx) {
                 /* Do not leave a stale pooled ctx around during redirect */
-                if (ssl_ctx == s_persist_ctx) {
+                if (use_art_persist && ssl_ctx == s_art_persist_ctx) {
+                    s_art_persist_ctx = NULL;
+                    s_art_persist_host[0] = '\0';
+                    s_art_persist_port = 0;
+                } else if (!use_art_persist && ssl_ctx == s_persist_ctx) {
                     s_persist_ctx = NULL;
                     s_persist_host[0] = '\0';
                     s_persist_port = 0;
@@ -875,12 +926,23 @@ static int plex_net_fetch_internal(const char *url,
     free(req);
     if (is_https && ssl_ctx && can_reuse) {
         /* Store connection for reuse on next fetch to the same host:port */
-        s_persist_ctx = ssl_ctx;
-        strncpy(s_persist_host, host, sizeof(s_persist_host) - 1);
-        s_persist_host[sizeof(s_persist_host) - 1] = '\0';
-        s_persist_port = port;
+        if (use_art_persist) {
+            s_art_persist_ctx = ssl_ctx;
+            strncpy(s_art_persist_host, host, sizeof(s_art_persist_host) - 1);
+            s_art_persist_host[sizeof(s_art_persist_host) - 1] = '\0';
+            s_art_persist_port = port;
+        } else {
+            s_persist_ctx = ssl_ctx;
+            strncpy(s_persist_host, host, sizeof(s_persist_host) - 1);
+            s_persist_host[sizeof(s_persist_host) - 1] = '\0';
+            s_persist_port = port;
+        }
     } else if (ssl_ctx) {
-        if (ssl_ctx == s_persist_ctx) {
+        if (use_art_persist && ssl_ctx == s_art_persist_ctx) {
+            s_art_persist_ctx = NULL;
+            s_art_persist_host[0] = '\0';
+            s_art_persist_port = 0;
+        } else if (!use_art_persist && ssl_ctx == s_persist_ctx) {
             s_persist_ctx = NULL;
             s_persist_host[0] = '\0';
             s_persist_port = 0;
@@ -893,7 +955,11 @@ static int plex_net_fetch_internal(const char *url,
     return total_read;
 
 cleanup_fail:
-    if (ssl_ctx == s_persist_ctx) {
+    if (use_art_persist && ssl_ctx == s_art_persist_ctx) {
+        s_art_persist_ctx = NULL;
+        s_art_persist_host[0] = '\0';
+        s_art_persist_port = 0;
+    } else if (!use_art_persist && ssl_ctx == s_persist_ctx) {
         s_persist_ctx = NULL;
         s_persist_host[0] = '\0';
         s_persist_port = 0;

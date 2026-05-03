@@ -238,10 +238,10 @@ static void *fetch_thread_func(void *arg)
 
     PlexNetOptions opts;
     memset(&opts, 0, sizeof(opts));
-    opts.method      = PLEX_HTTP_GET;
-    opts.token       = token;
-    opts.timeout_sec = 15;
-    opts.no_persist  = true;
+    opts.method          = PLEX_HTTP_GET;
+    opts.token           = token;
+    opts.timeout_sec     = 15;
+    opts.use_art_persist = true;
 
     int bytes = plex_net_fetch(fetch_url, img_buf, 256 * 1024, &opts);
 
@@ -302,6 +302,9 @@ void plex_art_cleanup(void)
         art_ctx.thread_active = false;
     }
 
+    /* Thread is guaranteed done — safe to close art persistent connection */
+    plex_net_art_connection_close();
+
     if (art_ctx.pending_surface) {
         SDL_FreeSurface(art_ctx.pending_surface);
         art_ctx.pending_surface = NULL;
@@ -357,9 +360,17 @@ void plex_art_fetch(const PlexConfig *cfg, const char *thumb_path)
                 art_ctx.pending_surface = NULL;
             }
         } else {
-            /* Thread still running — detach it; it will discard its result via
-               generation check and free any surfaces before exiting */
-            pthread_detach(art_ctx.fetch_thread);
+            /* Thread still running — join it; should_stop is already set so
+               the worker exits at its next checkpoint.  With a warm persistent
+               connection the in-flight plex_net_fetch completes quickly
+               (~100-500 ms), after which the worker checks should_stop and
+               returns.  Joining here ensures s_art_persist_ctx is never
+               accessed by two threads at once. */
+            pthread_join(art_ctx.fetch_thread, NULL);
+            if (art_ctx.pending_surface) {
+                SDL_FreeSurface(art_ctx.pending_surface);
+                art_ctx.pending_surface = NULL;
+            }
         }
         art_ctx.thread_active = false;
     }
