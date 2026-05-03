@@ -40,7 +40,7 @@ typedef enum {
 #define SERVER_UPDATED_PAUSE_MS 1500
 
 /* Screen-timeout cycle: ordered list of values (seconds) */
-static const int SCREEN_TIMEOUT_VALUES[] = { 0, 15, 30, 60, 120, 300 };
+static const int SCREEN_TIMEOUT_VALUES[] = { 0, 5, 10, 15, 30, 60, 120, 300 };
 static const int SCREEN_TIMEOUT_COUNT =
     (int)(sizeof(SCREEN_TIMEOUT_VALUES) / sizeof(SCREEN_TIMEOUT_VALUES[0]));
 
@@ -49,6 +49,8 @@ static const char *screen_timeout_label(int seconds)
 {
     switch (seconds) {
         case 0:   return "Off";
+        case 5:   return "5 seconds";
+        case 10:  return "10 seconds";
         case 15:  return "15 seconds";
         case 30:  return "30 seconds";
         case 60:  return "1 minute";
