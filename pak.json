@@ -1,7 +1,7 @@
 {
   "type": "TOOL",
   "name": "Plex Music",
-  "version": "v1.0.0",
+  "version": "v1.0.1",
   "description": "Plex music client for NextUI",
   "platforms": [
     "tg5040"
