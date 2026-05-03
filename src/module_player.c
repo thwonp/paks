@@ -712,13 +712,20 @@ static void render_playing_screen(SDL_Surface *screen,
     snprintf(time_label, sizeof(time_label), "%s / %s", pos_str, dur_str);
     render_text_centered(screen, Fonts_getSmall(), gray, time_label, time_y);
 
-    /* Codec/quality badge — top-right corner */
+    /* Codec/quality badge — top-left corner, pill background */
     if (s_state.badge_str[0]) {
-        SDL_Color badge_gray = { 180, 180, 180, 255 };
-        SDL_Surface *badge = TTF_RenderUTF8_Blended(Fonts_getSmall(), s_state.badge_str, badge_gray);
+        SDL_Color white = COLOR_WHITE;
+        SDL_Surface *badge = TTF_RenderUTF8_Blended(Fonts_getSmall(), s_state.badge_str, white);
         if (badge) {
-            SDL_Rect dst = { PADDING, PADDING, badge->w, badge->h };
-            SDL_BlitSurface(badge, NULL, screen, &dst);
+            int pill_w = badge->w + SCALE1(BUTTON_PADDING * 2);
+            int pill_h = SCALE1(PILL_SIZE);
+            int hw_pad = is_brick ? SCALE1(5) : SCALE1(10);
+            GFX_blitPillLight(ASSET_WHITE_PILL, screen,
+                              &(SDL_Rect){ hw_pad, hw_pad, pill_w, pill_h });
+            int text_x = hw_pad + SCALE1(BUTTON_PADDING);
+            int text_y = hw_pad + (pill_h - badge->h) / 2;
+            SDL_BlitSurface(badge, NULL, screen,
+                            &(SDL_Rect){ text_x, text_y, badge->w, badge->h });
             SDL_FreeSurface(badge);
         }
     }
